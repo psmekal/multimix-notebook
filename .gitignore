@@ -1,0 +1,6 @@
+data/
+runtime/
+node_modules/
+.notebook-revision
+.notebook-manifest.json
+*.log

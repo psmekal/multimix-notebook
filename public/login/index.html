@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MultiMix – Přihlášení</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <style>
+    body { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+      padding: 32px 36px; min-width: 340px; }
+    h2 { margin: 0 0 24px; text-align: center; }
+    .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+    label { font-size: 13px; color: var(--muted); }
+    input { width: 100%; }
+    button[type=submit] { width: 100%; margin-top: 8px; padding: 10px; font-size: 15px; }
+    .err { color: var(--red); font-size: 13px; min-height: 18px; text-align: center; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>🎛 MultiMix</h2>
+    <form id="form">
+      <div class="field">
+        <label for="u">Uživatelské jméno</label>
+        <input id="u" name="username" autocomplete="username" required autofocus>
+      </div>
+      <div class="field">
+        <label for="p">Heslo</label>
+        <input id="p" name="password" type="password" autocomplete="current-password" required>
+      </div>
+      <button type="submit" class="primary">Přihlásit se</button>
+      <div class="err" id="err"></div>
+    </form>
+  </div>
+  <script>
+    document.getElementById('form').onsubmit = async e => {
+      e.preventDefault();
+      document.getElementById('err').textContent = '';
+      const username = document.getElementById('u').value;
+      const password = document.getElementById('p').value;
+      try {
+        const r = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        const data = await r.json();
+        if (!r.ok) { document.getElementById('err').textContent = data.error || 'Chyba přihlášení'; return; }
+        const role = data.user.role;
+        const next = new URLSearchParams(location.search).get('next');
+        const hallHome = (() => {
+          const hid = (data.user.halls || []).map(Number)[0];
+          return Number.isFinite(hid) ? '/hall/?hall=' + hid : '/hall/';
+        })();
+        if (next) {
+          const nextPath = next.split('?')[0];
+          if (role === 'hall' && (nextPath === '/hall' || nextPath === '/hall/')) {
+            const nextHall = new URLSearchParams(next.split('?')[1] || '').get('hall');
+            if (!nextHall) { location.href = hallHome; return; }
+          }
+          location.href = next;
+          return;
+        }
+        if (role === 'admin' || role === 'reziser') location.href = '/admin/';
+        else location.href = hallHome;
+      } catch {
+        document.getElementById('err').textContent = 'Chyba sítě';
+      }
+    };
+  </script>
+</body>
+</html>

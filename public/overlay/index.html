@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8">
+  <title>MultiMix – Overlay</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden;
+      font-family: 'Segoe UI', 'Arial Black', system-ui, sans-serif; }
+    /* fixed 1920x1080 design stage; JS scales+centers it to fit any window.
+       At exactly 1920x1080 (OBS browser source) scale = 1 => no change. */
+    #stage { position: absolute; top: 0; left: 0; width: 1920px; height: 1080px; transform-origin: top left; }
+
+    /* ===== score bug: bottom center ===== */
+    #bugWrap {
+      position: absolute; bottom: 96px; left: 50%;
+      transform: translateX(-50%) scale(.8); transform-origin: center bottom;
+      opacity: 0; transition: opacity .4s;
+    }
+    #bugWrap.visible { opacity: 1; }
+    /* premium broadcast scoreboard (uno-overlays style). Team colours come from
+       CSS vars --home/--away set by JS, so the plates can use glossy gradients. */
+    #bug {
+      --home: #1d3fb8; --away: #b81d1d; --home-text: #fff; --away-text: #fff;
+      display: flex; align-items: flex-end;
+      filter: drop-shadow(0 16px 26px rgba(0,0,0,.55)) drop-shadow(0 2px 4px rgba(0,0,0,.5));
+    }
+    /* home/away groups (team + score) that unfold to the sides on reveal */
+    .wing { display: flex; align-items: flex-end; }
+    .wing.home { transform-origin: right center; }
+    .wing.away { transform-origin: left center; }
+    .side {
+      position: relative; height: 66px; min-width: 384px; overflow: hidden;
+      display: flex; align-items: center; gap: 16px; padding: 0 26px;
+      font-size: 28px; font-weight: 800; letter-spacing: .5px; text-transform: uppercase;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.45), inset 0 -1px 0 rgba(0,0,0,.35);
+    }
+    .side.home {
+      justify-content: flex-start; color: var(--home-text); border-radius: 12px 0 0 12px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.34) 0%, rgba(255,255,255,0) 42%, rgba(0,0,0,.30) 100%),
+        var(--home);
+    }
+    .side.away {
+      justify-content: flex-end; text-align: right; color: var(--away-text); border-radius: 0 12px 12px 0;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.34) 0%, rgba(255,255,255,0) 42%, rgba(0,0,0,.30) 100%),
+        var(--away);
+    }
+    .side .name { white-space: nowrap; text-shadow: 0 2px 3px rgba(0,0,0,.5); }
+    /* timeout dots next to the team name */
+    .todots { display: inline-flex; gap: 5px; align-items: center; margin: 0 2px; }
+    .todots .d { width: 9px; height: 9px; border-radius: 50%; background: rgba(255,255,255,.30);
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,.35); }
+    .todots .d.used { background: #ffd24d; box-shadow: 0 0 7px rgba(255,210,77,.8); }
+    /* TIMEOUT / card announcements centred above the score (between the
+       corner suspension chips) */
+    .flash { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+      margin-bottom: 14px; pointer-events: none; z-index: 3; text-align: center; }
+    .flash-stack { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+    .flash-team { font-size: 16px; font-weight: 800; letter-spacing: 2px; color: #fff;
+      text-shadow: 0 2px 4px rgba(0,0,0,.7); text-transform: uppercase; }
+    @keyframes toPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.045); } }
+    .flash-to { background: linear-gradient(180deg, #ffd24d, #e0a91f); color: #1a1205; font-weight: 900;
+      font-size: 24px; letter-spacing: 3px; padding: 9px 24px; border-radius: 8px; white-space: nowrap;
+      box-shadow: 0 10px 24px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.5);
+      animation: toPulse 1.6s ease-in-out infinite; }
+    .flash-card { min-width: 46px; height: 62px; padding: 0 8px; border-radius: 6px; display: flex; gap: 6px;
+      align-items: center; justify-content: center; font-weight: 900; font-size: 24px; color: #fff;
+      box-shadow: 0 10px 24px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.3); }
+    .fc-yellow { background: linear-gradient(180deg, #ffd24d, #d29922); color: #1a1205; }
+    .fc-red { background: linear-gradient(180deg, #ff5b53, #c0241d); }
+    .fc-blue { background: linear-gradient(180deg, #5b9bff, #2f6fdb); }
+    .side img {
+      height: 52px; width: 52px; object-fit: contain; padding: 4px;
+      background: rgba(0,0,0,.20); border-radius: 10px;
+      box-shadow: 0 2px 5px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.22);
+    }
+    /* dark glass score boxes with a team-colour underline */
+    .scorebox {
+      position: relative; height: 66px; min-width: 94px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 42px; font-weight: 800; font-variant-numeric: tabular-nums; color: #fff;
+      background: linear-gradient(180deg, #2c3036 0%, #15171b 55%, #050609 100%);
+      text-shadow: 0 2px 5px rgba(0,0,0,.7);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.16);
+    }
+    .scorebox.home { box-shadow: inset 0 1px 0 rgba(255,255,255,.16), inset 0 -4px 0 var(--home); }
+    .scorebox.away { box-shadow: inset 0 1px 0 rgba(255,255,255,.16), inset 0 -4px 0 var(--away); }
+    /* raised centre clock module with a gold accent */
+    .clock {
+      position: relative; height: 86px; min-width: 152px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 0 16px; border-radius: 12px 12px 0 0;
+      background: linear-gradient(180deg, #222730 0%, #0d0f13 60%, #040507 100%);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.20), 0 6px 16px rgba(0,0,0,.5);
+    }
+    .clock::before {
+      content: ''; position: absolute; top: 0; left: 12px; right: 12px; height: 3px; border-radius: 3px;
+      background: linear-gradient(90deg, transparent, #ffd24d, #f0b429, transparent);
+      box-shadow: 0 0 10px rgba(255,210,77,.65);
+    }
+    .clock .per { color: #ffd24d; font-size: 14px; font-weight: 800; letter-spacing: 3px; line-height: 1;
+      margin-bottom: 4px; text-shadow: 0 0 8px rgba(255,210,77,.45); }
+    .clock .time { color: #fff; font-size: 35px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1;
+      text-shadow: 0 0 14px rgba(255,210,77,.28); }
+    .clock.timeout .time { color: #ffd24d; text-shadow: 0 0 16px rgba(255,210,77,.7); }
+    /* animated digits (odometer roll) */
+    .dig { display: inline-block; white-space: pre; }
+
+    /* penalties: above the bug, anchored to the penalized team's side */
+    .susp-col { position: absolute; bottom: 100%; margin-bottom: 10px; display: flex; gap: 8px; }
+    #suspHome { left: 0; }
+    #suspAway { right: 0; justify-content: flex-end; }
+    .susp-chip {
+      background: linear-gradient(180deg, #3a1210 0%, #1c0807 60%, #0d0303 100%);
+      box-shadow: inset 0 2px 0 rgba(255,120,110,.4), 0 4px 12px rgba(0,0,0,.5);
+      color: #ff8a82; font-size: 20px; font-weight: 800;
+      padding: 6px 14px; border-radius: 5px; font-variant-numeric: tabular-nums; white-space: nowrap;
+    }
+    .susp-chip b { color: #fff; }
+
+    /* ===== ticker: full-width bottom strip, 3D like the bug ===== */
+    #ticker {
+      position: absolute; bottom: 0; left: 0; right: 0; height: 56px;
+      background: linear-gradient(180deg, #21304d 0%, #101a2e 30%, #060b16 100%);
+      box-shadow: inset 0 2px 0 rgba(120,170,255,.45), inset 0 -3px 8px rgba(0,0,0,.6),
+        0 -8px 24px rgba(0,0,0,.45);
+      overflow: hidden; display: none;
+      transform: translateY(100%);
+    }
+    #tickerText {
+      position: absolute; left: 100%; /* anchored off-screen right by default */
+      white-space: nowrap; line-height: 56px;
+      color: #fff; font-size: 27px; font-weight: 600; letter-spacing: .5px;
+      text-shadow: 0 2px 4px rgba(0,0,0,.6);
+      will-change: transform;
+    }
+    /* message types (level) distinguished by colour + icon */
+    #tickerText .tk-info { color: #ffffff; }
+    #tickerText .tk-warning { color: #ffd24d; }
+    #tickerText .tk-important { color: #ff6b62; font-weight: 800; }
+    #tickerText .tk-sep { color: #5f7390; margin: 0 1.2em; font-weight: 700; }
+
+    /* persistent logos (tournament / sponsors) in screen corners, always on */
+    .brand-corner { position: absolute; display: flex; align-items: center; }
+    #brand-tl { top: 40px; left: 40px; }
+    #brand-tr { top: 40px; right: 40px; }
+    #brand-bl { bottom: 80px; left: 40px; }
+    #brand-br { bottom: 80px; right: 40px; }
+    .brand-corner img, .brand-corner video { object-fit: contain; filter: drop-shadow(0 3px 8px rgba(0,0,0,.55)); }
+
+    /* OBS browser source + transparent page often drops the <video> compositor
+       layer (score HTML still works → score hides, clip stays invisible).
+       Promote opaque clips to their own layer; leave the stinger unpromoted so
+       VP9 alpha composites onto the camera instead of flattening to black. */
+    #spot-video, #ad-a, #ad-b {
+      transform: translateZ(0);
+      backface-visibility: hidden;
+      background: #000;
+    }
+    #stinger-video { background: transparent; }
+
+    /* ===== pre-match lineups: full-screen split panel, one team each side ===== */
+    #lineups {
+      position: absolute; inset: 0; display: none; z-index: 50;
+      background: rgba(4,7,14,.88);
+      flex-direction: row; align-items: stretch; gap: 2px;
+    }
+    #lineups.on { display: flex; }
+    .lu-team {
+      flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center;
+      padding: 58px 44px 32px; position: relative; overflow: hidden;
+      color: #fff;
+      background: rgba(255,255,255,.04);
+      backdrop-filter: blur(2px);
+    }
+    /* team-colour top bar */
+    .lu-team::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 5px;
+      background: var(--lu-bg, #1d3fb8);
+      box-shadow: 0 0 18px var(--lu-bg, #1d3fb8);
+    }
+    .lu-head { display: flex; align-items: center; gap: 18px; margin-bottom: 6px; }
+    .lu-team.away .lu-head { flex-direction: row-reverse; }
+    .lu-head img { height: 72px; width: 72px; object-fit: contain;
+      filter: drop-shadow(0 3px 8px rgba(0,0,0,.7)); }
+    .lu-name { font-size: 36px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase;
+      text-shadow: 0 2px 6px rgba(0,0,0,.8); }
+    .lu-accent { width: 100%; max-width: 520px; height: 3px; border-radius: 2px; margin: 10px 0 18px;
+      background: var(--lu-bg, #1d3fb8); opacity: .55; }
+    .lu-list { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 5px; }
+    .lu-row { display: flex; align-items: center; gap: 14px; padding: 5px 14px; border-radius: 6px;
+      background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.07); }
+    .lu-team.away .lu-row { flex-direction: row-reverse; text-align: right; }
+    .lu-num { flex: none; min-width: 44px; text-align: center; font-size: 22px; font-weight: 900;
+      font-variant-numeric: tabular-nums; padding: 1px 6px; border-radius: 5px;
+      background: var(--lu-bg, #1d3fb8); color: #fff;
+      box-shadow: 0 2px 5px rgba(0,0,0,.4); }
+    .lu-pname { flex: 1; min-width: 0; font-size: 22px; font-weight: 700; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+    .lu-pos { flex: none; font-size: 15px; font-weight: 700; opacity: .55; letter-spacing: 1px; text-transform: uppercase; }
+    .lu-title { position: absolute; top: 18px; left: 50%; transform: translateX(-50%); z-index: 2;
+      font-size: 18px; font-weight: 800; letter-spacing: 6px; text-transform: uppercase; color: rgba(255,255,255,.5);
+      white-space: nowrap; }
+
+    /* ===== upcoming matches panel ===== */
+    #upcoming {
+      position: absolute; inset: 0; display: none; z-index: 45;
+      background: rgba(4,7,14,.92);
+      flex-direction: column; align-items: center; justify-content: center;
+    }
+    #upcoming.on { display: flex; }
+    #up-header {
+      display: flex; flex-direction: column; align-items: center; margin-bottom: 48px;
+    }
+    #up-hall {
+      font-size: 16px; font-weight: 800; letter-spacing: 6px; text-transform: uppercase;
+      color: rgba(255,255,255,.45); margin-bottom: 10px;
+    }
+    #up-title {
+      font-size: 44px; font-weight: 900; letter-spacing: 8px; text-transform: uppercase;
+      color: #fff; text-shadow: 0 2px 18px rgba(255,210,77,.18);
+    }
+    #up-title::after {
+      content: ''; display: block; margin: 12px auto 0;
+      width: 80px; height: 3px; border-radius: 3px;
+      background: linear-gradient(90deg, transparent, #ffd24d, transparent);
+      box-shadow: 0 0 12px rgba(255,210,77,.6);
+    }
+    #up-cards {
+      display: flex; gap: 32px; align-items: stretch;
+    }
+    .up-card {
+      width: 560px; display: flex; flex-direction: column;
+      background: rgba(255,255,255,.10);
+      border: 1px solid rgba(255,255,255,.20);
+      border-radius: 18px; overflow: hidden;
+      box-shadow: 0 24px 56px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.25);
+      backdrop-filter: blur(6px);
+    }
+    .up-card-top {
+      padding: 18px 26px 16px;
+      display: flex; align-items: center; justify-content: space-between;
+      background: rgba(255,255,255,.08); border-bottom: 1px solid rgba(255,255,255,.15);
+    }
+    .up-stage {
+      font-size: 14px; font-weight: 800; letter-spacing: 3px; text-transform: uppercase;
+      color: #ffd24d; text-shadow: 0 0 8px rgba(255,210,77,.4);
+    }
+    .up-time {
+      font-size: 26px; font-weight: 900; font-variant-numeric: tabular-nums;
+      color: #fff; letter-spacing: 1px;
+    }
+    .up-teams {
+      flex: 1; display: flex; flex-direction: column; justify-content: center;
+      gap: 0; padding: 28px 26px 30px;
+    }
+    .up-team {
+      display: flex; align-items: center; gap: 20px;
+    }
+    .up-team-logo {
+      width: 88px; height: 88px; object-fit: contain;
+      background: rgba(255,255,255,.15); border-radius: 14px;
+      padding: 7px; flex-shrink: 0;
+      box-shadow: 0 3px 10px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.25);
+    }
+    .up-team-logo-empty {
+      width: 88px; height: 88px; flex-shrink: 0;
+      background: rgba(255,255,255,.10); border-radius: 14px;
+      border: 1px solid rgba(255,255,255,.20);
+    }
+    .up-team-name {
+      font-size: 32px; font-weight: 800; color: #fff; text-transform: uppercase;
+      letter-spacing: .5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      text-shadow: 0 2px 8px rgba(0,0,0,.5);
+    }
+    .up-team-stripe {
+      height: 4px; border-radius: 3px; margin: 6px 26px 6px;
+      opacity: .8;
+    }
+    .up-vs {
+      display: flex; align-items: center; justify-content: center;
+      padding: 10px 0;
+    }
+    .up-vs-line { flex: 1; height: 1px; background: rgba(255,255,255,.20); }
+    .up-vs-text { padding: 0 16px; font-size: 15px; font-weight: 800;
+      letter-spacing: 4px; color: rgba(255,255,255,.45); text-transform: uppercase; }
+  </style>
+</head>
+<body>
+  <!-- Spot video: fullscreen, covers camera + scoreboard during ads.
+       Layers (bottom→top): ad-layer (double-buffered ad videos on black) and
+       stinger-video (alpha transition on top). spot-video = manual single spot. -->
+  <div id="spot-wrap" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;z-index:9999;background:#000">
+    <div id="ad-layer" style="display:none;position:absolute;inset:0;background:#000;z-index:1">
+      <video id="ad-a" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain" playsinline preload="auto"></video>
+      <video id="ad-b" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:none" playsinline preload="auto"></video>
+    </div>
+    <video id="stinger-video" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:2;display:none;background:transparent" playsinline muted preload="auto"></video>
+    <video id="spot-video" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:1;display:none" playsinline preload="auto"></video>
+  </div>
+
+  <div id="stage">
+    <div class="brand-corner" id="brand-tl"></div>
+    <div class="brand-corner" id="brand-tr"></div>
+    <div class="brand-corner" id="brand-bl"></div>
+    <div class="brand-corner" id="brand-br"></div>
+    <div id="bugWrap">
+      <div class="susp-col" id="suspHome"></div>
+      <div class="susp-col" id="suspAway"></div>
+      <div class="flash" id="flash"></div>
+      <div id="bug">
+        <div class="wing home">
+          <div class="side home"><img id="hLogo" style="display:none"><span class="name" id="hName"></span><span class="todots" id="hTodots"></span></div>
+          <div class="scorebox home" id="hScore">0</div>
+        </div>
+        <div class="clock" id="clock"><div class="per" id="per">P1</div><div class="time" id="time">00:00</div></div>
+        <div class="wing away">
+          <div class="scorebox away" id="aScore">0</div>
+          <div class="side away"><span class="todots" id="aTodots"></span><span class="name" id="aName"></span><img id="aLogo" style="display:none"></div>
+        </div>
+      </div>
+    </div>
+    <div id="ticker"><div id="tickerText"></div></div>
+    <div id="upcoming">
+      <div id="up-header">
+        <div id="up-hall"></div>
+        <div id="up-title">Další zápasy</div>
+      </div>
+      <div id="up-cards"></div>
+    </div>
+    <div id="lineups">
+      <div class="lu-title">Soupiska</div>
+      <div class="lu-team home"><div class="lu-head"><img id="luHomeLogo" style="display:none"><div class="lu-name" id="luHomeName"></div></div><div class="lu-accent"></div><div class="lu-list" id="luHomeList"></div></div>
+      <div class="lu-team away"><div class="lu-head"><img id="luAwayLogo" style="display:none"><div class="lu-name" id="luAwayName"></div></div><div class="lu-accent"></div><div class="lu-list" id="luAwayList"></div></div>
+    </div>
+  </div>
+  <script>
+    // scale the 1920x1080 stage to fit the window, preserving aspect ratio
+    (function () {
+      const stage = document.getElementById('stage');
+      function fit() {
+        const s = Math.min(innerWidth / 1920, innerHeight / 1080);
+        const x = (innerWidth - 1920 * s) / 2, y = (innerHeight - 1080 * s) / 2;
+        stage.style.transform = `translate(${x}px, ${y}px) scale(${s})`;
+      }
+      addEventListener('resize', fit); fit();
+    })();
+  </script>
+  <script src="/socket.io/socket.io.js"></script>
+  <!-- cache-busting import: every load fetches the latest module, defeating
+       browser/OBS cache that kept showing an old overlay -->
+  <script type="module">import('./overlay.js?t=' + Date.now());</script>
+</body>
+</html>

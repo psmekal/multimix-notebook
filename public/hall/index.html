@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MultiMix – Panel haly</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <style>
+    .wrap { max-width: 760px; margin: 0 auto; padding: 14px; }
+    .scoreboard { display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; text-align: center; align-items: center; }
+    .score { font-size: 64px; font-weight: 700; line-height: 1; }
+    .timer { font-size: 44px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .teamname { font-size: 20px; font-weight: 600; min-height: 26px; }
+    .bigbtn { font-size: 22px; padding: 16px 0; width: 100%; }
+    .evbtn { width: 100%; padding: 12px 0; }
+    .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .to-dots { display: flex; gap: 6px; justify-content: center; margin-top: 6px; min-height: 14px; }
+    .to-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--accent); }
+    .to-dot.used { background: var(--accent); }
+    .keybind { min-width: 110px; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div class="wrap grid">
+    <div class="grid" id="app">Načítám…</div>
+  </div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script type="module">
+    import('./hall.js?t=' + Date.now());
+  </script>
+</body>
+</html>

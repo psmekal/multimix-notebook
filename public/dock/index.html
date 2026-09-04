@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MultiMix Dock</title>
+  <style>
+    :root {
+      --bg: #16161d; --panel: #21212d; --border: #35354a;
+      --text: #e4e4f0; --muted: #7878a0;
+      --accent: #4a8ef8; --success: #237a42; --danger: #b52020;
+      --warn-bg: #6b5000; --warn-bd: #b88a00;
+      --blue-bg: #1a3580; --blue-bd: #2f5ae0;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: var(--bg); color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 12px; width: 100%;
+    }
+    body { padding: 5px; display: flex; flex-direction: column; gap: 5px; }
+
+    /* ---- scoreboard strip ---- */
+    .sb {
+      display: grid; grid-template-columns: 1fr auto 1fr;
+      gap: 4px; align-items: center; text-align: center;
+      background: var(--panel); border-radius: 7px; padding: 7px 5px 6px;
+      border: 1px solid var(--border);
+    }
+    .sb-score { font-size: 44px; font-weight: 800; line-height: 1; }
+    .sb-name { font-size: 10px; font-weight: 600; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sb-clock { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
+    .sb-per { font-size: 10px; color: var(--muted); margin-top: 2px; }
+    .todots { display: flex; gap: 4px; justify-content: center; margin-top: 4px; min-height: 10px; }
+    .todot { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--accent); }
+    .todot.used { background: var(--accent); }
+
+    /* ---- timer controls ---- */
+    .row { display: flex; gap: 4px; }
+    .row button { flex: 1; }
+
+    /* ---- two-column team section ---- */
+    .teams { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    .team-col {
+      background: var(--panel); border-radius: 7px; padding: 5px;
+      border: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px;
+    }
+    .team-hdr { font-size: 9px; font-weight: 700; text-transform: uppercase; color: var(--muted);
+      text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cards { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 3px; }
+
+    /* ---- buttons ---- */
+    button {
+      background: var(--panel); color: var(--text); border: 1px solid var(--border);
+      border-radius: 5px; padding: 5px 3px; cursor: pointer;
+      font-size: 11px; font-weight: 600; width: 100%;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      transition: filter .1s;
+    }
+    button:hover:not(:disabled) { filter: brightness(1.15); }
+    button:active:not(:disabled) { filter: brightness(.85); }
+    button:disabled { opacity: .35; cursor: default; }
+    .btn-start  { background: var(--success); border-color: #3ab060; color: #fff; font-size: 13px; padding: 7px; }
+    .btn-stop   { background: var(--danger);  border-color: #e04040; color: #fff; font-size: 13px; padding: 7px; }
+    .btn-goal   { background: #163a7a; border-color: #2b5cc0; color: #fff; }
+    .btn-susp   { background: #3a2200; border-color: #835010; color: #ffd080; }
+    .btn-yellow { background: var(--warn-bg); border-color: var(--warn-bd); color: #ffd24d; }
+    .btn-red    { background: var(--danger);  border-color: #e04040; color: #fff; }
+    .btn-blue   { background: var(--blue-bg); border-color: var(--blue-bd); color: #9bbfff; }
+    .btn-to     { background: #2a2a3a; border-color: #45455a; color: var(--text); font-size: 10px; }
+    .btn-undo   { background: #2a2a3a; border-color: #45455a; width: 28px; flex: none; font-size: 13px; padding: 4px 0; }
+    .btn-sm     { font-size: 10px; padding: 3px 2px; }
+
+    /* ---- suspensions ---- */
+    .susp-box {
+      background: var(--panel); border-radius: 7px; padding: 5px 6px;
+      border: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px;
+    }
+    .susp-hdr { font-size: 9px; font-weight: 700; text-transform: uppercase; color: var(--muted); }
+    .susp-item { display: flex; justify-content: space-between; align-items: center; }
+    .susp-item span { font-size: 11px; }
+    .susp-item button { width: auto; flex: none; padding: 2px 6px; font-size: 10px;
+      background: var(--danger); border-color: #e04040; color: #fff; }
+
+    /* ---- mini modal ---- */
+    .mini-modal {
+      position: fixed; inset: 0; background: rgba(0,0,0,.75);
+      display: flex; align-items: center; justify-content: center; z-index: 99;
+    }
+    .mini-box {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px; display: flex; flex-direction: column; gap: 8px; width: 180px;
+    }
+    .mini-box h4 { font-size: 12px; text-align: center; }
+    .mini-box input {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+      color: var(--text); padding: 6px 8px; font-size: 22px; font-variant-numeric: tabular-nums;
+      text-align: center; width: 100%; outline: none;
+    }
+    .mini-box input:focus { border-color: var(--accent); }
+    .mini-row { display: flex; gap: 6px; }
+    .mini-row button { flex: 1; }
+
+    .status-bar { font-size: 9px; color: var(--muted); text-align: center; padding-top: 1px; }
+    .err { background: #3a1515; color: #f85149; padding: 8px; font-size: 11px; margin-bottom: 8px; border-radius: 4px; line-height: 1.35; }
+    .no-match { text-align: center; color: var(--muted); padding: 30px 10px; }
+    .no-match .icon { font-size: 28px; margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+  <div id="app"><div class="status-bar">Načítám…</div></div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script type="module">import('./dock.js?t=' + Date.now());</script>
+</body>
+</html>

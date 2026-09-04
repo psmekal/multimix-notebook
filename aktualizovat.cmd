@@ -2,54 +2,37 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 
-echo Stahuji aktualni balicek...
-curl.exe -L --fail --retry 3 -o "%TEMP%\multimix-portable.zip" "https://github.com/psmekal/multimix-notebook/releases/latest/download/multimix-portable.zip"
+echo Stahuji aktualizator...
+curl.exe -L --fail --retry 3 -o "%TEMP%\multimix-update.mjs" "https://raw.githubusercontent.com/psmekal/multimix-notebook/main/update.mjs"
 if errorlevel 1 goto fail_dl
+copy /Y "%TEMP%\multimix-update.mjs" "%~dp0update.mjs" >nul
 
-set "UNPACK=%TEMP%\multimix-unpacked"
-if exist "%UNPACK%" rmdir /s /q "%UNPACK%"
-mkdir "%UNPACK%"
-tar.exe -xf "%TEMP%\multimix-portable.zip" -C "%UNPACK%"
-if errorlevel 1 goto fail_tar
+set "NODEEXE="
+if exist "%~dp0runtime\node\node.exe" set "NODEEXE=%~dp0runtime\node\node.exe"
+if not defined NODEEXE (
+  where node >nul 2>&1
+  if not errorlevel 1 set "NODEEXE=node"
+)
+if not defined NODEEXE goto fail_node
 
-set "SRC="
-if exist "%UNPACK%\multimix-portable\start-local.cmd" set "SRC=%UNPACK%\multimix-portable"
-if not defined SRC if exist "%UNPACK%\start-local.cmd" set "SRC=%UNPACK%"
-if not defined SRC goto fail_src
-
-rem %~dp0 ends with \ — that breaks quoted paths in robocopy/xcopy.
-set "DEST=%~dp0"
-if "%DEST:~-1%"=="\" set "DEST=%DEST:~0,-1%"
-
-echo Kopiruji soubory, slozka data zustane.
-echo Zdroj: %SRC%
-echo Cil:   %DEST%
-robocopy "%SRC%" "%DEST%" /E /XD data /R:1 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np
-if errorlevel 8 goto fail_copy
-
-echo Hotovo. Spust start-local.cmd
+echo Porovnavam soubory s GitHubem...
+"%NODEEXE%" "%~dp0update.mjs"
+if errorlevel 1 goto fail_run
+echo.
 pause
 exit /b 0
 
 :fail_dl
-echo Stazeni ZIP se nezdarilo.
+echo Stazeni aktualizatoru se nezdarilo. Je internet?
 pause
 exit /b 1
 
-:fail_tar
-echo Rozbaleni ZIP se nezdarilo.
+:fail_node
+echo Chybi Node. Spust nejdriv start-local.cmd, nebo zkontroluj runtime\node\node.exe
 pause
 exit /b 1
 
-:fail_src
-echo Ve ZIPu chybi start-local.cmd
-dir /s /b "%UNPACK%\start-local.cmd"
-pause
-exit /b 1
-
-:fail_copy
-echo Kopirovani se nezdarilo.
-echo SRC=%SRC%
-echo DEST=%DEST%
+:fail_run
+echo Aktualizace se nezdarila.
 pause
 exit /b 1

@@ -1,0 +1,10 @@
+{
+  "name": "multimix-agent",
+  "version": "1.0.0",
+  "description": "MultiMix OBS Agent pre halu",
+  "main": "obs-agent.js",
+  "dependencies": {
+    "socket.io-client": "^4.7.5",
+    "ws": "^8.18.0"
+  }
+}

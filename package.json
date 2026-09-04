@@ -1,0 +1,22 @@
+{
+  "name": "multimix",
+  "version": "0.1.0",
+  "description": "Centralni rezie pro vicehalovy turnajovy streaming (hazena)",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "build:agent": "node tools/build-agent.mjs",
+    "build:remote": "node tools/build-remote.mjs",
+    "build:installer": "node tools/build-installer.mjs"
+  },
+  "dependencies": {
+    "@fastify/multipart": "^8.3.0",
+    "@fastify/static": "^7.0.4",
+    "fastify": "^4.28.0",
+    "puppeteer-core": "^25.1.0",
+    "selfsigned": "^5.5.0",
+    "socket.io": "^4.7.5"
+  }
+}

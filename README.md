@@ -1,18 +1,22 @@
-﻿# MultiMix – přenosný notebook
+# MultiMix – přenosný notebook
 
-Záložní réžie a světelný panel na Windows PC **bez cloudu**. V ZIPu je jen to, co je potřeba ke spuštění (včetně přenosného Node.js). Nejsou tam instalátory hal, OBS ani produkční databáze.
+Záložní réžie a světelný panel na Windows **bez cloudu**.
 
-## Stáhnout
+## První instalace
 
-Otevři **Releases** vpravo nahoře a stáhni `multimix-portable.zip` (vždy poslední verze).
+Stáhni [multimix-portable.zip](https://github.com/psmekal/multimix-notebook/releases/latest/download/multimix-portable.zip)
+(jednou — obsahuje Node). Rozbal a spusť `start-local.cmd`.
+Přihlášení: `admin` / `admin`.
 
-1. Rozbal ZIP.
-2. Dvojklik na `start-local.cmd`.
-3. Réžie: http://localhost:3000/admin/ (prázdná DB = `admin` / `admin`).
-4. Světelný panel: http://localhost:3000/panel/?hall=1
+## Aktualizace (jen změněné soubory)
 
-## Aktualizace
+Zavři server a dvojklik na `aktualizovat.cmd`.
+Stáhne z tohoto repa jen soubory, které se změnily. Složka `data`, Node i `node_modules` zůstanou.
 
-Na notebooku zavři server a spusť `aktualizovat.cmd`, nebo stáhni nový ZIP a rozbal ho přes starou složku. Složka `data` (zápasy, týmy, hesla) se nesmí mazat.
+## Vývojové PC
 
-Nový ZIP se na vývojovém PC skládá příkazem `pack-portable.cmd` v hlavním MultiMix repu a nahraje se sem do Releases.
+Po změně v MultiMix:
+
+```
+node tools/sync-notebook-repo.mjs
+```

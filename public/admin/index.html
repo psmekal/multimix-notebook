@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MultiMix – Centrální režie</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <style>
+    /* 2 columns by default (larger previews). Skip 3 — jump to 4 when they fit. */
+    .monitors { display: grid; grid-template-columns: 1fr; gap: 14px; }
+    @container admin-main (min-width: 640px) {
+      .monitors { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @container admin-main (min-width: 1560px) {
+      .monitors { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    }
+    .monitor video, .monitor img.preview-img { width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 6px; object-fit: contain; display: block; }
+    .bracket { display: flex; gap: 30px; overflow-x: auto; padding: 10px 0; }
+    .bracket .round { display: flex; flex-direction: column; justify-content: space-around; gap: 14px; min-width: 220px; }
+    .bracket .bmatch { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
+    .bracket .bmatch .row { justify-content: space-between; }
+    .led-previews { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 14px; }
+    .led-frame { width: 100%; aspect-ratio: 1040 / 208; background: #000; overflow: hidden; border-radius: 6px; container-type: inline-size; }
+    .led-frame iframe { width: 1040px; height: 208px; border: 0; pointer-events: none; transform-origin: top left; transform: scale(calc(100cqi / 1040)); }
+  </style>
+</head>
+<body class="with-sidebar">
+  <button id="menuToggle" class="menu-toggle" aria-label="Menu">&#9776;</button>
+
+  <nav id="sidebar" class="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-title">🎛 MultiMix</span>
+      <button id="sidebarClose" class="sidebar-close" aria-label="Zavřít">&#10005;</button>
+    </div>
+    <div id="tabs" class="sidebar-tabs"></div>
+    <div class="sidebar-footer">
+      <button id="logoutBtn" class="sidebar-logout"></button>
+    </div>
+  </nav>
+
+  <div id="sidebarOverlay" class="sidebar-overlay"></div>
+
+  <main id="view" class="main-content">Načítám…</main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script type="module">import('/admin/admin.js?t=' + Date.now());</script>
+</body>
+</html>
