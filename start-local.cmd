@@ -35,9 +35,10 @@ exit /b 1
 :have_node
 set MULTIMIX_LOCAL=1
 set ADMIN_PASSWORD=admin
-rem Bind na vsechny sitove karty. Pro jednu IP zmen dalsi radek, treba: set HOST=192.168.1.50
-if not defined HOST set HOST=0.0.0.0
-netsh advfirewall firewall add rule name="MultiMix HTTP" dir=in action=allow protocol=TCP localport=3000 >nul 2>&1
+rem Vzdy vsechny sitove karty. HOST na Windows nekdy obsahuje jmeno PC a LAN pak nefunguje.
+set MULTIMIX_BIND=0.0.0.0
+netsh advfirewall firewall add rule name="MultiMix HTTP" dir=in action=allow protocol=TCP localport=3000 profile=any >nul 2>&1
+netsh advfirewall firewall add rule name="MultiMix HTTPS" dir=in action=allow protocol=TCP localport=3443 profile=any >nul 2>&1
 if not exist node_modules (
   echo Instaluji npm zavislosti, potrebuje internet...
   if exist "%~dp0runtime\node\npm.cmd" (
@@ -57,6 +58,7 @@ echo Panel haly:      http://localhost:3000/hall/?hall=1
 echo Svetelny panel:  http://localhost:3000/panel/?hall=1
 echo Prihlaseni:      admin / admin
 echo Aktualizace:     sync.cmd
+echo Sit z jineho PC: povolit-sit.cmd jako spravce, pak IP z logu nize
 echo Zastaveni:       zavri toto okno
 start "" "http://localhost:3000/admin/"
 "%NODEEXE%" src\index.js

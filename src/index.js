@@ -24,7 +24,7 @@ import { startTournamentSync, restartTournamentSync, getTournamentState } from '
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = +(process.env.PORT || 3000);
-const HOST = process.env.HOST || '0.0.0.0';
+const BIND = process.env.MULTIMIX_BIND || '0.0.0.0';
 
 const app = Fastify({ logger: false });
 await app.register(multipart, { limits: { fileSize: 2 * 1024 * 1024 * 1024 } });
@@ -1898,8 +1898,29 @@ io.on('connection', socket => {
   });
 });
 
-httpServer.listen(PORT, HOST);
-if (httpsServer) httpsServer.listen(HTTPS_PORT, HOST);
+httpServer.on('error', err => {
+  console.error('HTTP listen error:', err.message);
+  process.exit(1);
+});
+if (httpsServer) httpsServer.on('error', err => {
+  console.error('HTTPS listen error:', err.message);
+});
+httpServer.listen(PORT, BIND, () => {
+  const a = httpServer.address();
+  console.log(`HTTP listening ${a.address}:${a.port} (${a.family})`);
+});
+if (httpsServer) httpsServer.listen(HTTPS_PORT, BIND, () => {
+  const a = httpsServer.address();
+  console.log(`HTTPS listening ${a.address}:${a.port} (${a.family})`);
+});
+const seenPeers = new Set();
+httpServer.on('connection', sock => {
+  const ip = sock.remoteAddress || '';
+  if (ip === '127.0.0.1' || ip === '::1' || ip.endsWith('127.0.0.1')) return;
+  if (seenPeers.has(ip)) return;
+  seenPeers.add(ip);
+  console.log('Spojeni z', ip);
+});
 
 startTournamentSync(io);
 
@@ -1909,9 +1930,9 @@ for (const { id } of db.prepare(`SELECT id FROM matches WHERE status='live' AND 
 process.on('SIGINT', () => { process.exit(0); });
 const ips = localIPv4();
 console.log(`MultiMix server:`);
-console.log(`  Bind: ${HOST}:${PORT}`);
+console.log(`  Bind: ${BIND}:${PORT}`);
 console.log(`  Tento PC:  http://localhost:${PORT}/admin/`);
-if (HOST === '0.0.0.0' || HOST === '::') {
+if (BIND === '0.0.0.0' || BIND === '::') {
   for (const ip of ips) {
     console.log(`  Sit:       http://${ip}:${PORT}/admin/`);
     console.log(`             http://${ip}:${PORT}/panel/?hall=1`);
@@ -1919,10 +1940,10 @@ if (HOST === '0.0.0.0' || HOST === '::') {
   if (!ips.length)
     console.log(`  Sit:       zadna LAN adresa — zkontroluj sitovou kartu`);
 } else {
-  console.log(`  Sit:       http://${HOST}:${PORT}/admin/`);
+  console.log(`  Sit:       http://${BIND}:${PORT}/admin/`);
 }
 if (httpsServer) {
-  console.log(`  HTTPS:     https://${ips[0] || HOST}:${HTTPS_PORT}  panel haly /overlay`);
+  console.log(`  HTTPS:     https://${ips[0] || BIND}:${HTTPS_PORT}  panel haly /overlay`);
 }
 if (process.env.MULTIMIX_LOCAL === '1') console.log('  Prihlaseni: admin / admin');
 console.log(`  Pokud z jineho PC nejde pripojit, povol TCP ${PORT} ve Windows Firewall.`);
