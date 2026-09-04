@@ -53,7 +53,7 @@ echo Rezie:           http://localhost:3000/admin/
 echo Panel haly:      http://localhost:3000/hall/?hall=1
 echo Svetelny panel:  http://localhost:3000/panel/?hall=1
 echo Prihlaseni:      admin / admin
-echo Aktualizace:     aktualizovat.cmd
+echo Aktualizace:     sync.cmd
 echo Zastaveni:       zavri toto okno
 start "" "http://localhost:3000/admin/"
 "%NODEEXE%" src\index.js
@@ -75,6 +75,7 @@ echo Rezie:           http://localhost:3000/admin/
 echo Panel haly:      http://localhost:3000/hall/?hall=1
 echo Svetelny panel:  http://localhost:3000/panel/?hall=1
 echo Prihlaseni:      admin / admin
+echo Aktualizace:     sync.cmd
 echo Zastaveni:       stop-local.cmd
 ping -n 4 127.0.0.1 >nul
 start "" "http://localhost:3000/admin/"

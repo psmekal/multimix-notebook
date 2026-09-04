@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 
-echo Stahuji aktualizator...
+echo Sync - stahuji jen zmenene soubory, slozka data zustane...
 curl.exe -L --fail --retry 3 -o "%TEMP%\multimix-update.mjs" "https://raw.githubusercontent.com/psmekal/multimix-notebook/main/update.mjs"
 if errorlevel 1 goto fail_dl
 copy /Y "%TEMP%\multimix-update.mjs" "%~dp0update.mjs" >nul
@@ -15,7 +15,6 @@ if not defined NODEEXE (
 )
 if not defined NODEEXE goto fail_node
 
-echo Porovnavam soubory s GitHubem...
 "%NODEEXE%" "%~dp0update.mjs"
 if errorlevel 1 goto fail_run
 echo.
@@ -23,16 +22,16 @@ pause
 exit /b 0
 
 :fail_dl
-echo Stazeni aktualizatoru se nezdarilo. Je internet?
+echo Stazeni se nezdarilo. Je internet? Pokud jeste nemas balicek, spust install.cmd.
 pause
 exit /b 1
 
 :fail_node
-echo Chybi Node. Spust nejdriv start-local.cmd, nebo zkontroluj runtime\node\node.exe
+echo Chybi Node. Spust nejdriv install.cmd.
 pause
 exit /b 1
 
 :fail_run
-echo Aktualizace se nezdarila.
+echo Sync se nezdaril.
 pause
 exit /b 1
