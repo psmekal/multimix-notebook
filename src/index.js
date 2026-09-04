@@ -24,6 +24,7 @@ import { startTournamentSync, restartTournamentSync, getTournamentState } from '
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = +(process.env.PORT || 3000);
+const HOST = process.env.HOST || '0.0.0.0';
 
 const app = Fastify({ logger: false });
 await app.register(multipart, { limits: { fileSize: 2 * 1024 * 1024 * 1024 } });
@@ -1897,8 +1898,8 @@ io.on('connection', socket => {
   });
 });
 
-httpServer.listen(PORT, '0.0.0.0');
-if (httpsServer) httpsServer.listen(HTTPS_PORT, '0.0.0.0');
+httpServer.listen(PORT, HOST);
+if (httpsServer) httpsServer.listen(HTTPS_PORT, HOST);
 
 startTournamentSync(io);
 
@@ -1908,9 +1909,20 @@ for (const { id } of db.prepare(`SELECT id FROM matches WHERE status='live' AND 
 process.on('SIGINT', () => { process.exit(0); });
 const ips = localIPv4();
 console.log(`MultiMix server:`);
-console.log(`  HTTP  (lokálně/režie):  http://localhost:${PORT}`);
-if (httpsServer) {
-  console.log(`  HTTPS (haly/kamera):    https://${ips[0] || 'localhost'}:${HTTPS_PORT}`);
-  console.log(`    panel haly: https://<IP>:${HTTPS_PORT}/hall/?hall=1   (přijmi varování certifikátu)`);
+console.log(`  Bind: ${HOST}:${PORT}`);
+console.log(`  Tento PC:  http://localhost:${PORT}/admin/`);
+if (HOST === '0.0.0.0' || HOST === '::') {
+  for (const ip of ips) {
+    console.log(`  Sit:       http://${ip}:${PORT}/admin/`);
+    console.log(`             http://${ip}:${PORT}/panel/?hall=1`);
+  }
+  if (!ips.length)
+    console.log(`  Sit:       zadna LAN adresa — zkontroluj sitovou kartu`);
+} else {
+  console.log(`  Sit:       http://${HOST}:${PORT}/admin/`);
 }
-console.log(`  Rezie (admin):   http://localhost:${PORT}/admin/`);
+if (httpsServer) {
+  console.log(`  HTTPS:     https://${ips[0] || HOST}:${HTTPS_PORT}  panel haly /overlay`);
+}
+if (process.env.MULTIMIX_LOCAL === '1') console.log('  Prihlaseni: admin / admin');
+console.log(`  Pokud z jineho PC nejde pripojit, povol TCP ${PORT} ve Windows Firewall.`);

@@ -35,6 +35,9 @@ exit /b 1
 :have_node
 set MULTIMIX_LOCAL=1
 set ADMIN_PASSWORD=admin
+rem Bind na vsechny sitove karty. Pro jednu IP zmen dalsi radek, treba: set HOST=192.168.1.50
+if not defined HOST set HOST=0.0.0.0
+netsh advfirewall firewall add rule name="MultiMix HTTP" dir=in action=allow protocol=TCP localport=3000 >nul 2>&1
 if not exist node_modules (
   echo Instaluji npm zavislosti, potrebuje internet...
   if exist "%~dp0runtime\node\npm.cmd" (
