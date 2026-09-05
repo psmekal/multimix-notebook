@@ -267,6 +267,8 @@ spotVideo.addEventListener('ended', () => {
 
 // --- Ad break (stinger transition + weighted ads, orchestrated client-side) ---
 let adBreakActive = false;
+let adBreakGen = 0; // invalidates an in-flight runAdBreak when a new one starts
+let adBreakCancel = null; // resolve in-flight adsDonePromise on interrupt
 let scenarioActive = false; // true while a scenario is playing — blocks per-step score restores
 const stage = document.getElementById('stage');
 
@@ -372,12 +374,28 @@ function playAdsSeamless(ads, leadSeconds = 0) {
   });
 }
 
+function clearFullscreenPanels() {
+  for (const id of ['upcoming', 'lineups']) {
+    const el = $(id);
+    if (!el) continue;
+    el.getAnimations().forEach(a => a.cancel());
+    el.classList.remove('on');
+  }
+}
+
 async function runAdBreak(stinger, ads, cutPct) {
-  if (!ads.length || adBreakActive) return;
+  if (!ads.length) return;
+  // A later scenario step (ad → upcoming → ad) must not be dropped because
+  // the previous break is still marked active. Silent-end so the old async
+  // run cannot emit a second adbreak:ended and skip remaining steps.
+  if (adBreakActive) endAdBreak({ silent: true });
   adBreakActive = true;
+  const gen = adBreakGen;
+  const stillMine = () => adBreakActive && gen === adBreakGen;
+  clearFullscreenPanels();
   const leadP = stinger ? getStingerDuration(stinger) : Promise.resolve(0);
   await hideScoreThenWait();                    // animate score out first, then start the break
-  if (!adBreakActive) return;                   // stopped during the wait
+  if (!stillMine()) return;
   if (stage) stage.style.display = 'none';     // hide scoreboard + branding during the break
   spotVideo.style.display = 'none';
   adLayer.style.display = 'none';
@@ -385,12 +403,16 @@ async function runAdBreak(stinger, ads, cutPct) {
   spotWrap.style.display = 'block';
 
   let adsDone;
-  const adsDonePromise = new Promise(r => (adsDone = r));
+  const adsDonePromise = new Promise(r => {
+    adsDone = r;
+    adBreakCancel = r;
+  });
 
   // OPENING: stinger over camera; at cut, opaque ads so OBS actually paints them
   if (stinger) {
     await new Promise(res => playStinger(stinger, cutPct,
       () => {
+        if (!stillMine()) return;
         spotWrap.style.background = '#000';
         adLayer.style.display = 'block';
         playAdsSeamless(ads, leadP).then(adsDone);
@@ -403,7 +425,7 @@ async function runAdBreak(stinger, ads, cutPct) {
   }
 
   await adsDonePromise;                         // last ad is within stinger-length of ending
-  if (!adBreakActive) return;
+  if (!stillMine()) return;
 
   // CLOSING: stinger over the still-playing last ad; at cut, hide ads so
   // remaining alpha reveals the camera.
@@ -415,11 +437,13 @@ async function runAdBreak(stinger, ads, cutPct) {
       },
       res));
   }
-  endAdBreak();
+  if (stillMine()) endAdBreak();
 }
 
 function endAdBreak({ silent = false } = {}) {
   adBreakActive = false;
+  adBreakGen++;
+  if (adBreakCancel) { adBreakCancel(); adBreakCancel = null; }
   for (const v of [adA, adB, stingerV]) { v.onended = null; v.ontimeupdate = null; clearVideo(v); v.style.display = 'none'; }
   adA.style.display = 'block'; // reset default buffer visibility for next break
   adB.style.display = 'none';

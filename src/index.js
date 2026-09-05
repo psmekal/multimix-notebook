@@ -25,11 +25,124 @@ import { startTournamentSync, restartTournamentSync, getTournamentState } from '
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = +(process.env.PORT || 3000);
 const BIND = process.env.MULTIMIX_BIND || '0.0.0.0';
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
+const uploadTmpDir = path.join(path.dirname(mediaDir), '.uploads');
+fs.mkdirSync(uploadTmpDir, { recursive: true });
 
-const app = Fastify({ logger: false });
-await app.register(multipart, { limits: { fileSize: 2 * 1024 * 1024 * 1024 } });
+const app = Fastify({ logger: false, bodyLimit: MAX_UPLOAD_BYTES });
+await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1, fields: 16 } });
 await app.register(fastifyStatic, { root: path.join(__dirname, '..', 'public'), prefix: '/' });
 await app.register(fastifyStatic, { root: mediaDir, prefix: '/media-files/', decorateReply: false });
+
+app.setErrorHandler((err, req, reply) => {
+  if (err.code === 'FST_REQ_FILE_TOO_LARGE' || err.code === 'FST_ERR_CTP_BODY_TOO_LARGE' || err.statusCode === 413)
+    return reply.code(413).send({ error: 'Soubor je příliš velký (max. 2 GB)' });
+  reply.send(err);
+});
+
+function formField(fields, key) {
+  const f = fields?.[key];
+  if (f == null) return '';
+  if (typeof f === 'string') return f;
+  if (Array.isArray(f)) return formField({ [key]: f[0] }, key);
+  return String(f.value ?? '');
+}
+
+function mediaTypeFromName(name) {
+  return /\.(png|jpe?g|gif|webp|svg)$/i.test(name) ? 'image' : 'video';
+}
+
+function cleanupStaleUploads() {
+  const maxAge = 6 * 3600 * 1000;
+  try {
+    for (const name of fs.readdirSync(uploadTmpDir)) {
+      const p = path.join(uploadTmpDir, name);
+      if (Date.now() - fs.statSync(p).mtimeMs > maxAge) fs.unlinkSync(p);
+    }
+  } catch {}
+}
+
+function safeFilePart(name) {
+  return String(name || 'soubor').replace(/[^\w.\-]+/g, '_') || 'soubor';
+}
+
+/** Save a single-shot or chunked multipart file into mediaDir. */
+async function saveMultipartFile(req, { namePrefix = '' } = {}) {
+  const part = await req.file();
+  if (!part) return { error: 'Chybí soubor', status: 400 };
+
+  const fields = part.fields || {};
+  const originalName = formField(fields, 'originalName') || part.filename || 'soubor';
+  const uploadIdRaw = formField(fields, 'uploadId');
+  const chunkIndex = formField(fields, 'chunkIndex');
+  const chunkCountRaw = formField(fields, 'chunkCount');
+  const chunked = uploadIdRaw && chunkIndex !== '' && chunkCountRaw !== '';
+  cleanupStaleUploads();
+
+  const abortStream = () => { try { part.file.resume(); } catch {} };
+
+  if (!chunked) {
+    const filename = `${namePrefix}${Date.now()}_${safeFilePart(part.filename || originalName)}`;
+    const tmpPath = path.join(uploadTmpDir, `${filename}.part`);
+    await pipeline(part.file, fs.createWriteStream(tmpPath));
+    if (part.file.truncated) {
+      try { fs.unlinkSync(tmpPath); } catch {}
+      return { error: 'Soubor je příliš velký (max. 2 GB)', status: 413 };
+    }
+    fs.renameSync(tmpPath, path.join(mediaDir, filename));
+    return { filename, originalName, type: mediaTypeFromName(originalName) };
+  }
+
+  if (!/^[A-Za-z0-9_-]{1,80}$/.test(uploadIdRaw)) {
+    abortStream();
+    return { error: 'Neplatné nahrávání', status: 400 };
+  }
+  const idx = +chunkIndex;
+  const count = +chunkCountRaw;
+  if (!Number.isInteger(idx) || !Number.isInteger(count) || idx < 0 || count < 1 || idx >= count) {
+    abortStream();
+    return { error: 'Neplatný úsek souboru', status: 400 };
+  }
+
+  const tmpPath = path.join(uploadTmpDir, `${uploadIdRaw}.part`);
+  const metaPath = path.join(uploadTmpDir, `${uploadIdRaw}.meta`);
+
+  if (idx === 0) {
+    await pipeline(part.file, fs.createWriteStream(tmpPath));
+  } else {
+    if (!fs.existsSync(tmpPath) || !fs.existsSync(metaPath)) {
+      abortStream();
+      return { error: 'Nahrávání není zahájeno', status: 400 };
+    }
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    if (meta.nextIndex !== idx) {
+      abortStream();
+      return { error: 'Úseky musí jít popořadě', status: 400 };
+    }
+    await pipeline(part.file, fs.createWriteStream(tmpPath, { flags: 'a' }));
+  }
+
+  if (part.file.truncated) {
+    try { fs.unlinkSync(tmpPath); fs.unlinkSync(metaPath); } catch {}
+    return { error: 'Soubor je příliš velký (max. 2 GB)', status: 413 };
+  }
+  const bytes = fs.statSync(tmpPath).size;
+  if (bytes > MAX_UPLOAD_BYTES) {
+    try { fs.unlinkSync(tmpPath); fs.unlinkSync(metaPath); } catch {}
+    return { error: 'Soubor je příliš velký (max. 2 GB)', status: 413 };
+  }
+
+  const displayName = idx === 0 ? originalName
+    : (JSON.parse(fs.readFileSync(metaPath, 'utf8')).originalName || originalName);
+  fs.writeFileSync(metaPath, JSON.stringify({ nextIndex: idx + 1, originalName: displayName, bytes }));
+
+  if (idx < count - 1) return { pending: true, received: idx + 1, total: count };
+
+  const filename = `${namePrefix}${Date.now()}_${safeFilePart(displayName)}`;
+  try { fs.unlinkSync(metaPath); } catch {}
+  fs.renameSync(tmpPath, path.join(mediaDir, filename));
+  return { filename, originalName: displayName, type: mediaTypeFromName(displayName) };
+}
 
 // ---------- auth ----------
 function parseCookies(header) {
@@ -1504,11 +1617,16 @@ app.put('/api/teams/:id', req => {
   emitSchedule();
   return db.prepare('SELECT * FROM teams WHERE id = ?').get(req.params.id);
 });
-app.post('/api/teams/:id/logo', async req => {
+app.post('/api/teams/:id/logo', async (req, reply) => {
   const part = await req.file();
-  const ext = path.extname(part.filename).toLowerCase() || '.png';
+  if (!part) return reply.code(400).send({ error: 'Chybí soubor' });
+  const ext = path.extname(part.filename || '').toLowerCase() || '.png';
   const filename = `team${req.params.id}_logo${ext}`;
   await pipeline(part.file, fs.createWriteStream(path.join(mediaDir, filename)));
+  if (part.file.truncated) {
+    try { fs.unlinkSync(path.join(mediaDir, filename)); } catch {}
+    return reply.code(413).send({ error: 'Soubor je příliš velký (max. 2 GB)' });
+  }
   db.prepare('UPDATE teams SET logo = ? WHERE id = ?').run(filename, req.params.id);
   emitSchedule();
   return db.prepare('SELECT * FROM teams WHERE id = ?').get(req.params.id);
@@ -1900,13 +2018,11 @@ app.post('/api/media/:id/move', req => {
   }
   return { ok: true };
 });
-app.post('/api/media/upload', async req => {
-  const part = await req.file();
-  const safe = part.filename.replace(/[^\w.\-]+/g, '_');
-  const filename = `${Date.now()}_${safe}`;
-  await pipeline(part.file, fs.createWriteStream(path.join(mediaDir, filename)));
-  const type = /\.(png|jpe?g|gif|webp)$/i.test(filename) ? 'image' : 'video';
-  const r = db.prepare('INSERT INTO media (name, filename, type) VALUES (?, ?, ?)').run(part.filename, filename, type);
+app.post('/api/media/upload', async (req, reply) => {
+  const saved = await saveMultipartFile(req);
+  if (saved.error) return reply.code(saved.status || 400).send({ error: saved.error });
+  if (saved.pending) return { ok: true, pending: true, received: saved.received, total: saved.total };
+  const r = db.prepare('INSERT INTO media (name, filename, type) VALUES (?, ?, ?)').run(saved.originalName, saved.filename, saved.type);
   return db.prepare('SELECT * FROM media WHERE id = ?').get(r.lastInsertRowid);
 });
 app.put('/api/media/:id', req => {
@@ -1933,13 +2049,11 @@ app.delete('/api/media/:id', req => {
 
 // ---------- branding (persistent logos: tournament / sponsors) ----------
 app.get('/api/branding', () => db.prepare('SELECT * FROM branding ORDER BY corner, sort_order, id').all());
-app.post('/api/branding/upload', async req => {
-  const part = await req.file();
-  const safe = part.filename.replace(/[^\w.\-]+/g, '_');
-  const filename = `brand_${Date.now()}_${safe}`;
-  await pipeline(part.file, fs.createWriteStream(path.join(mediaDir, filename)));
-  const type = /\.(png|jpe?g|gif|webp|svg)$/i.test(filename) ? 'image' : 'video';
-  const r = db.prepare('INSERT INTO branding (name, filename, type) VALUES (?, ?, ?)').run(part.filename, filename, type);
+app.post('/api/branding/upload', async (req, reply) => {
+  const saved = await saveMultipartFile(req, { namePrefix: 'brand_' });
+  if (saved.error) return reply.code(saved.status || 400).send({ error: saved.error });
+  if (saved.pending) return { ok: true, pending: true, received: saved.received, total: saved.total };
+  const r = db.prepare('INSERT INTO branding (name, filename, type) VALUES (?, ?, ?)').run(saved.originalName, saved.filename, saved.type);
   io.emit('branding:update');
   return db.prepare('SELECT * FROM branding WHERE id = ?').get(r.lastInsertRowid);
 });
@@ -1992,10 +2106,18 @@ app.get('/api/public/schedule', () => ({
 // ---------- start: HTTP (localhost) + HTTPS (hall notebooks / OBS overlay) ----------
 const HTTPS_PORT = +(process.env.HTTPS_PORT || 3443);
 await app.ready();
+function relaxHttpTimeouts(server) {
+  if (!server) return;
+  // Node 18+ defaults requestTimeout to 5 min, which kills GB-sized video uploads.
+  server.requestTimeout = 0;
+  server.timeout = 0;
+}
 const httpServer = http.createServer(app.routing);
+relaxHttpTimeouts(httpServer);
 let httpsServer = null;
 try {
   httpsServer = https.createServer(await ensureCert(), app.routing);
+  relaxHttpTimeouts(httpsServer);
 } catch (e) {
   console.error('HTTPS se nepodařilo nastavit:', e.message);
 }

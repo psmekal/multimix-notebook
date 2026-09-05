@@ -40,6 +40,31 @@ export const api = {
   del: u => api.req('DELETE', u)
 };
 
+/** Upload a file in ~8 MB chunks so Cloudflare's 100 MB / 100 s limits don't drop it. */
+export async function uploadFile(url, file, { onProgress } = {}) {
+  const CHUNK = 8 * 1024 * 1024;
+  const uploadId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const chunkCount = Math.max(1, Math.ceil(file.size / CHUNK));
+  let last = null;
+  for (let i = 0; i < chunkCount; i++) {
+    const blob = file.slice(i * CHUNK, Math.min(file.size, (i + 1) * CHUNK));
+    const fd = new FormData();
+    fd.append('chunkIndex', String(i));
+    fd.append('chunkCount', String(chunkCount));
+    fd.append('uploadId', uploadId);
+    fd.append('originalName', file.name);
+    fd.append('file', blob, file.name);
+    const headers = {};
+    if (_hallToken) headers['X-Hall-Token'] = _hallToken;
+    const r = await fetch(url, { method: 'POST', body: fd, credentials: 'include', cache: 'no-store', headers });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `Nahrání selhalo (${r.status})`);
+    last = data;
+    if (onProgress) onProgress(i + 1, chunkCount);
+  }
+  return last;
+}
+
 export function fmtTime(ms) {
   const s = Math.floor(Math.max(0, Number(ms) || 0) / 1000);
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;

@@ -1,5 +1,5 @@
 // Central control room UI
-import { api, fmtTime, fmtDateTime, teamLabel, esc } from '/assets/common.js';
+import { api, fmtTime, fmtDateTime, teamLabel, esc, uploadFile } from '/assets/common.js';
 import { playHorn, unlockHorn, loadHornConfig, setHornUrl } from '/assets/horn.js?v=5';
 
 const view = document.getElementById('view');
@@ -613,9 +613,12 @@ const renders = {
     view.querySelectorAll('[data-logo]').forEach(inp => inp.onchange = async () => {
       const f = inp.files[0];
       if (!f) return;
-      const fd = new FormData(); fd.append('file', f);
-      await fetch(`/api/teams/${inp.dataset.logo}/logo`, { method: 'POST', body: fd });
-      renders.teams();
+      try {
+        await uploadFile(`/api/teams/${inp.dataset.logo}/logo`, f);
+        await renders.teams();
+      } catch (e) {
+        alert(e.message || 'Nahrání loga selhalo');
+      }
     });
   },
 
@@ -750,7 +753,7 @@ const renders = {
         <div class="row">
           <input type="file" id="mFile" accept="video/*,image/*">
           <button class="primary" id="mUpload">Nahrát</button>
-          <span class="muted">Videa „v rotaci" lze přehrát ze scénáře nebo ručně z Monitoringu (▶ Spot).</span>
+          <span id="mUploadStatus" class="muted">Videa „v rotaci" lze přehrát ze scénáře nebo ručně z Monitoringu (▶ Spot).</span>
         </div>
         <div class="row">
           <label>Přehrát spot teď na hale:</label>
@@ -803,10 +806,24 @@ const renders = {
     view.querySelectorAll('[data-adactive]').forEach(c => c.onchange = () => putAd(c.dataset.adactive, { ad_active: c.checked }));
     document.getElementById('mUpload').onclick = async () => {
       const f = document.getElementById('mFile').files[0];
-      if (!f) return;
-      const fd = new FormData(); fd.append('file', f);
-      await fetch('/api/media/upload', { method: 'POST', body: fd });
-      renders.media();
+      const status = document.getElementById('mUploadStatus');
+      const btn = document.getElementById('mUpload');
+      if (!f) { status.textContent = 'Vyber soubor'; return; }
+      btn.disabled = true;
+      status.textContent = 'Nahrávám…';
+      try {
+        await uploadFile('/api/media/upload', f, {
+          onProgress: (done, total) => {
+            status.textContent = total > 1
+              ? `Nahrávám… ${done}/${total} (${Math.round(done / total * 100)} %)`
+              : 'Nahrávám…';
+          }
+        });
+        await renders.media();
+      } catch (e) {
+        status.textContent = e.message || 'Nahrání selhalo';
+        btn.disabled = false;
+      }
     };
     view.querySelectorAll('[data-rot]').forEach(c => c.onchange = () => {
       const m = items.find(i => i.id === +c.dataset.rot);
@@ -838,7 +855,7 @@ const renders = {
         <div class="row">
           <input type="file" id="bFile" accept="image/*,video/*">
           <button class="primary" id="bUpload">Nahrát logo</button>
-          <span class="muted">Obrázek (PNG s průhledností je ideál) nebo malé video. Loga jsou stále zapnutá, nezávisle na scoreboardu.</span>
+          <span id="bUploadStatus" class="muted">Obrázek (PNG s průhledností je ideál) nebo malé video. Loga jsou stále zapnutá, nezávisle na scoreboardu.</span>
         </div>
         <span class="muted">Víc log ve stejném rohu se střídá po ~8 s. Dolní rohy mohou kolidovat se skóre/lištou — doporučeny horní.</span>
       </div>
@@ -855,10 +872,24 @@ const renders = {
       </tr>`).join('')}</tbody></table></div>`;
     document.getElementById('bUpload').onclick = async () => {
       const f = document.getElementById('bFile').files[0];
-      if (!f) return;
-      const fd = new FormData(); fd.append('file', f);
-      await fetch('/api/branding/upload', { method: 'POST', body: fd });
-      renders.branding();
+      const status = document.getElementById('bUploadStatus');
+      const btn = document.getElementById('bUpload');
+      if (!f) { status.textContent = 'Vyber soubor'; return; }
+      btn.disabled = true;
+      status.textContent = 'Nahrávám…';
+      try {
+        await uploadFile('/api/branding/upload', f, {
+          onProgress: (done, total) => {
+            status.textContent = total > 1
+              ? `Nahrávám… ${done}/${total} (${Math.round(done / total * 100)} %)`
+              : 'Nahrávám…';
+          }
+        });
+        await renders.branding();
+      } catch (e) {
+        status.textContent = e.message || 'Nahrání selhalo';
+        btn.disabled = false;
+      }
     };
     view.querySelectorAll('[data-saveb]').forEach(b => b.onclick = () => {
       const tr = view.querySelector(`tr[data-b="${b.dataset.saveb}"]`);
@@ -1438,9 +1469,9 @@ async function _openModal(user, halls) {
 
 // ---------- helpers ----------
 // Lower CSS order = higher on the Monitoring grid.
-// 0:00 stopped first (videos), then remaining time to period end, idle halls last.
+// 0:00 stopped and halls without a live match first (videos), then remaining time to period end.
 function monitorOrder(m) {
-  if (!m) return 2_000_000_000;
+  if (!m) return 0;
   const elapsed = m.elapsed_ms ?? 0;
   if (!m.timer_running && elapsed < 500) return 0;
   return Math.max(0, (m.period_target_ms || 0) - elapsed) + 1;
