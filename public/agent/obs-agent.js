@@ -383,6 +383,9 @@ socket.on('connect', () => {
   socket.emit('agent:version', { hall: HALL, version: AGENT_VERSION });
   reportStatus();
   if (obsConnected) getCameras().then(c => socket.emit('agent:cameras', { hall: HALL, cameras: c })).catch(() => {});
+  ensureRemoteHelper().then(() => {
+    if (!remoteProc && !remoteStopping) spawnRemoteHelper();
+  }).catch(() => {});
 });
 
 socket.on('connect_error', err => {
@@ -438,26 +441,32 @@ function httpGetText(url) {
   });
 }
 
+let remoteHelperJob = null;
 async function ensureRemoteHelper() {
-  const verUrl = '/downloads/multimix-remote-version.txt';
-  const localVer = path.join(BASE_DIR, 'multimix-remote.version');
-  try {
-    const remoteVer = String(await httpGetText(verUrl) || '').trim();
-    if (!remoteVer) return;
-    let local = '';
-    try { local = fs.readFileSync(localVer, 'utf8').trim(); } catch {}
-    const missing = !fs.existsSync(REMOTE_EXE);
-    if (!missing && local === remoteVer) return;
-    console.log('[Remote] Stahuji helper ' + remoteVer + (missing ? ' (chybí)' : ' (aktualizace)') + '...');
-    const tmp = REMOTE_EXE + '.new';
-    await downloadFile('/downloads/multimix-remote.exe', tmp);
-    try { if (fs.existsSync(REMOTE_EXE)) fs.unlinkSync(REMOTE_EXE); } catch {}
-    fs.renameSync(tmp, REMOTE_EXE);
-    fs.writeFileSync(localVer, remoteVer, 'utf8');
-    console.log('[Remote] Helper uložen');
-  } catch (e) {
-    console.warn('[Remote] Helper se nepodařilo aktualizovat: ' + e.message);
-  }
+  if (remoteHelperJob) return remoteHelperJob;
+  remoteHelperJob = (async () => {
+    const verUrl = '/downloads/multimix-remote-version.txt';
+    const localVer = path.join(BASE_DIR, 'multimix-remote.version');
+    try {
+      const remoteVer = String(await httpGetText(verUrl) || '').trim();
+      if (!remoteVer) return;
+      let local = '';
+      try { local = fs.readFileSync(localVer, 'utf8').trim(); } catch {}
+      const missing = !fs.existsSync(REMOTE_EXE);
+      if (!missing && local === remoteVer) return;
+      console.log('[Remote] Stahuji helper ' + remoteVer + (missing ? ' (chybí)' : ' (aktualizace)') + '...');
+      killRemoteHelperForUpdate();
+      const tmp = REMOTE_EXE + '.new';
+      await downloadFile('/downloads/multimix-remote.exe', tmp);
+      try { if (fs.existsSync(REMOTE_EXE)) fs.unlinkSync(REMOTE_EXE); } catch {}
+      fs.renameSync(tmp, REMOTE_EXE);
+      fs.writeFileSync(localVer, remoteVer, 'utf8');
+      console.log('[Remote] Helper uložen');
+    } catch (e) {
+      console.warn('[Remote] Helper se nepodařilo aktualizovat: ' + e.message);
+    }
+  })().finally(() => { remoteHelperJob = null; });
+  return remoteHelperJob;
 }
 
 socket.on('agent:update-available', async ({ url, version, remoteUrl }) => {
@@ -684,6 +693,8 @@ let remoteCapturing = false;
 let remoteRespawnTimer = null;
 let remoteStopping = false;
 let remoteStdoutBuf = Buffer.alloc(0);
+let lastCaptureParams = null;
+const REMOTE_STDOUT_BACKLOG = 2 * 1024 * 1024;
 
 function remoteSend(obj) {
   if (!remoteProc || !remoteProc.stdin || remoteProc.stdin.destroyed) return false;
@@ -722,8 +733,32 @@ function parseRemoteStdout(chunk) {
         console.error('[Remote] JSON parse:', e.message);
       }
     } else if (type === MSG_JPEG) {
-      if (remoteCapturing) socket.emit('remote:frame', Buffer.from(payload));
+      if (remoteCapturing && remoteStdoutBuf.length < REMOTE_STDOUT_BACKLOG)
+        socket.emit('remote:frame', Buffer.from(payload));
     }
+  }
+}
+
+function restoreCaptureIfNeeded() {
+  if (!lastCaptureParams || !remoteProc) return;
+  remoteCapturing = true;
+  remoteSend({
+    cmd: 'capture-on',
+    width: lastCaptureParams.width ?? 640,
+    fps: lastCaptureParams.fps ?? 4,
+    fpsIdle: lastCaptureParams.fpsIdle ?? lastCaptureParams.fps ?? 4,
+    quality: lastCaptureParams.quality ?? 35,
+  });
+}
+
+function killRemoteHelperForUpdate() {
+  clearTimeout(remoteRespawnTimer);
+  remoteRespawnTimer = null;
+  const proc = remoteProc;
+  remoteProc = null;
+  if (proc) {
+    try { proc.removeAllListeners('exit'); } catch {}
+    try { proc.kill(); } catch {}
   }
 }
 
@@ -762,6 +797,7 @@ function spawnRemoteHelper() {
     console.error('[Remote] Spawn chyba:', err.message);
     remoteProc = null;
   });
+  restoreCaptureIfNeeded();
 }
 
 function stopRemoteHelper() {
@@ -776,15 +812,16 @@ function stopRemoteHelper() {
 }
 
 socket.on('remote:start', (params = {}) => {
+  lastCaptureParams = params;
   if (!remoteProc) spawnRemoteHelper();
   // Allow frames even if status JSON is slightly delayed
   remoteCapturing = true;
   const ok = remoteSend({
     cmd: 'capture-on',
-    width: params.width ?? 1280,
-    fps: params.fps ?? 8,
-    fpsIdle: params.fpsIdle ?? params.fps ?? 8,
-    quality: params.quality ?? 40,
+    width: params.width ?? 640,
+    fps: params.fps ?? 4,
+    fpsIdle: params.fpsIdle ?? params.fps ?? 4,
+    quality: params.quality ?? 35,
   });
   if (!ok) {
     remoteCapturing = false;
@@ -793,6 +830,7 @@ socket.on('remote:start', (params = {}) => {
 });
 
 socket.on('remote:stop', () => {
+  lastCaptureParams = null;
   remoteSend({ cmd: 'capture-off' });
   remoteCapturing = false;
 });

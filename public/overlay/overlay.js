@@ -1,6 +1,6 @@
 // Overlay: scoreboard, spots, scenarios, branding. Loaded as OBS browser source
 // on the hall notebook; réžie controls playback via Socket.IO.
-import { api, fmtTime, clockSnap, clockMs, timeoutMs, esc, qs, setHallToken } from '/assets/common.js';
+import { api, fmtTime, clockSnap, clockMs, timeoutMs, esc, qs, setHallToken, setTeamLogo } from '/assets/common.js?v=6';
 import { playHorn, loadHornConfig, setHornUrl } from '/assets/horn.js?v=5';
 
 const hallId = +(qs.get('hall') || 1);
@@ -14,6 +14,7 @@ let suspensions = [];
 let overlayHidden = false;
 
 const socket = io({ auth: { hall: hallId, token: hallToken } });
+const overlayAck = () => ({ hall: hallId, token: hallToken });
 socket.on(`hall:${hallId}:match`, m => {
   match = m && m.status === 'live' ? m : null;
   snap = clockSnap(match);
@@ -170,7 +171,7 @@ function failSpot() {
   spotWrap.style.display = 'none';
   spotWrap.style.background = '#000';
   if (!scenarioActive) suppressScore(false);
-  socket.emit('spot:ended', { hall: hallId });
+  socket.emit('spot:ended', overlayAck());
 }
 
 function startSpotClosing() {
@@ -181,7 +182,7 @@ function startSpotClosing() {
     spotWrap.style.display = 'none';
     clearVideo(spotVideo);
     if (!scenarioActive) suppressScore(false);
-    socket.emit('spot:ended', { hall: hallId });
+    socket.emit('spot:ended', overlayAck());
     return;
   }
   const s = spotStinger, cp = spotStingerCutPct;
@@ -197,7 +198,7 @@ function startSpotClosing() {
       spotWrap.style.display = 'none';
       spotWrap.style.background = '#000';
       if (!scenarioActive) suppressScore(false);
-      socket.emit('spot:ended', { hall: hallId });
+      socket.emit('spot:ended', overlayAck());
     }
   );
 }
@@ -281,13 +282,16 @@ socket.on('adbreak:stop', ({ hallId: targetHall }) => {
 // Play the stinger on top; fire onCut when it reaches its full-cover point
 // (cutPct % of its duration) so the underlying source can switch hidden behind
 // it, then onEnd once the stinger has wiped away.
+let stingerEndTimer = 0;
 function playStinger(filename, cutPct, onCut, onEnd) {
   let cutFired = false, endFired = false;
+  clearTimeout(stingerEndTimer);
   const frac = Math.min(0.95, Math.max(0.05, (cutPct || 50) / 100));
   const fireCut = () => { if (!cutFired) { cutFired = true; onCut && onCut(); } };
   const fireEnd = () => {
     if (endFired) return;
     endFired = true;
+    clearTimeout(stingerEndTimer);
     fireCut(); // safety, in case timeupdate missed it
     stingerV.ontimeupdate = null; stingerV.onended = null;
     stingerV.removeEventListener('loadeddata', skipOpaqueLeadIn);
@@ -318,6 +322,10 @@ function playStinger(filename, cutPct, onCut, onEnd) {
     stingerV.style.opacity = '1';
     const wait = (Number.isFinite(stingerV.duration) ? stingerV.duration * frac * 1000 : 2000) + 150;
     setTimeout(fireCut, wait);
+    // OBS CEF sometimes never fires `ended`; without this, closing stinger
+    // never reports spot:ended and the réžia Stop button stays on.
+    const endWait = (Number.isFinite(stingerV.duration) ? stingerV.duration * 1000 : 4000) + 400;
+    stingerEndTimer = setTimeout(fireEnd, endWait);
   });
 }
 
@@ -410,7 +418,7 @@ async function runAdBreak(stinger, ads, cutPct) {
   endAdBreak();
 }
 
-function endAdBreak() {
+function endAdBreak({ silent = false } = {}) {
   adBreakActive = false;
   for (const v of [adA, adB, stingerV]) { v.onended = null; v.ontimeupdate = null; clearVideo(v); v.style.display = 'none'; }
   adA.style.display = 'block'; // reset default buffer visibility for next break
@@ -423,7 +431,7 @@ function endAdBreak() {
     suppressScore(false);
     draw();
   }
-  socket.emit('adbreak:ended', { hall: hallId });
+  if (!silent) socket.emit('adbreak:ended', overlayAck());
 }
 
 async function load() {
@@ -479,16 +487,18 @@ function setSide(side, prefix) {
   bug.style.setProperty(`--${side}`, match[`${side}_color_bg`] || '#1d3fb8');
   bug.style.setProperty(`--${side}-text`, match[`${side}_color_text`] || '#ffffff');
   $(`${prefix}Name`).textContent = name;
-  const logo = $(`${prefix}Logo`);
-  if (match[`${side}_logo`]) {
-    logo.src = `/media-files/${match[`${side}_logo`]}`;
-    logo.style.display = '';
-  } else logo.style.display = 'none';
+  setTeamLogo($(`${prefix}Logo`), match[`${side}_logo`], match[`${side}_team_id`]);
 }
 
 // ===== penalty chips: keyed by event id so countdowns update in place and
 // chips animate in (rise from the bug) and out (sink) =====
 const suspEls = new Map();
+
+function suspHost(side) {
+  if (side === 'home') return $('suspHome');
+  if (side === 'away') return $('suspAway');
+  return null;
+}
 
 function renderSusp() {
   const current = new Set(suspensions.map(s => s.id));
@@ -501,15 +511,19 @@ function renderSusp() {
     }
   }
   for (const s of suspensions) {
+    const host = suspHost(s.side);
+    if (!host) continue;
     let el = suspEls.get(s.id);
     if (!el) {
       el = document.createElement('span');
       el.className = 'susp-chip';
-      $(s.side === 'home' ? 'suspHome' : 'suspAway').appendChild(el);
+      host.appendChild(el);
       el.animate(
         [{ opacity: 0, transform: 'translateY(16px)' }, { opacity: 1, transform: 'translateY(0)' }],
         { duration: 400, easing: 'cubic-bezier(.2,.8,.2,1)' });
       suspEls.set(s.id, el);
+    } else if (el.parentElement !== host) {
+      host.appendChild(el);
     }
     el.innerHTML = `⏱ ${s.player_number ? `<b>#${esc(s.player_number)}</b> ` : ''}${fmtTime(s.remaining_ms)}`;
   }
@@ -894,9 +908,7 @@ function fillLineupSide(side, t) {
   root.style.setProperty('--lu-text', t.color_text || '#fff');
   root.style.setProperty('--lu-accent', t.color_text || '#ffd24d');
   $(`lu${side}Name`).textContent = t.name || '';
-  const logo = $(`lu${side}Logo`);
-  if (t.logo) { logo.src = `/media-files/${t.logo}`; logo.style.display = ''; }
-  else logo.style.display = 'none';
+  setTeamLogo($(`lu${side}Logo`), t.logo, t.id);
   const list = $(`lu${side}List`);
   list.innerHTML = (t.players || []).slice(0, 14).map(p =>
     `<div class="lu-row"><span class="lu-num">${p.number ?? '–'}</span>` +
@@ -942,11 +954,11 @@ socket.on('scenario:begin', ({ hallId: targetHall, stinger, cutPct }) => {
     spotWrap.style.background = 'transparent';
     spotWrap.style.display = 'block';
     playStinger(stinger, cutPct,
-      () => { socket.emit('scenario:ready', { hall: hallId }); },
+      () => { socket.emit('scenario:ready', overlayAck()); },
       () => {}
     );
   } else {
-    socket.emit('scenario:ready', { hall: hallId });
+    socket.emit('scenario:ready', overlayAck());
   }
 });
 
@@ -960,21 +972,26 @@ socket.on('scenario:end', ({ hallId: targetHall, stinger, cutPct }) => {
     spotWrap.style.display = 'block';
     playStinger(stinger, cutPct,
       () => { suppressScore(false); if (stage) stage.style.display = ''; draw(); },
-      () => { spotWrap.style.display = 'none'; spotWrap.style.background = '#000'; socket.emit('scenario:closed', { hall: hallId }); }
+      () => { spotWrap.style.display = 'none'; spotWrap.style.background = '#000'; socket.emit('scenario:closed', overlayAck()); }
     );
   } else {
     suppressScore(false);
     if (stage) stage.style.display = '';
     draw();
-    socket.emit('scenario:closed', { hall: hallId });
+    socket.emit('scenario:closed', overlayAck());
   }
 });
 
 socket.on('scenario:abort', ({ hallId: targetHall }) => {
   if (+targetHall !== hallId) return;
   scenarioActive = false;
+  if (adBreakActive) endAdBreak({ silent: true });
+  cancelSpotWatch();
+  spotCloseStarted = false;
+  spotStinger = null;
   stingerV.ontimeupdate = null; stingerV.onended = null;
   clearVideo(stingerV); stingerV.style.display = 'none'; stingerV.style.opacity = '';
+  clearVideo(spotVideo); spotVideo.style.display = 'none';
   spotWrap.style.display = 'none'; spotWrap.style.background = '#000';
   suppressScore(false);
   if (stage) stage.style.display = '';

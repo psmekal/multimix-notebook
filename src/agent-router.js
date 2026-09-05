@@ -199,8 +199,8 @@ export class AgentRouter {
   }
 
   /** Preview tiles vs full remote-control session. Control always wins. */
-  static PREVIEW_CAPTURE = { width: 960, fps: 8, fpsIdle: 8, quality: 40 };
-  static CONTROL_CAPTURE = { width: 1920, fps: 15, fpsIdle: 15, quality: 50 };
+  static PREVIEW_CAPTURE = { width: 640, fps: 4, fpsIdle: 4, quality: 35 };
+  static CONTROL_CAPTURE = { width: 1280, fps: 8, fpsIdle: 8, quality: 40 };
 
   applyRemoteCapture(hallId) {
     const id = +hallId;

@@ -1,6 +1,6 @@
 // LED score panel 1040×208: live match display for a second monitor.
 // Same Socket.IO contract as the OBS overlay; no spots/ticker/branding.
-import { api, fmtTime, clockSnap, clockMs, timeoutMs, esc, qs, setHallToken } from '/assets/common.js';
+import { api, fmtTime, clockSnap, clockMs, timeoutMs, esc, qs, setHallToken, setTeamLogo } from '/assets/common.js?v=6';
 import { playHorn, unlockHorn, loadHornConfig, setHornUrl } from '/assets/horn.js?v=5';
 
 const hallId = +(qs.get('hall') || 1);
@@ -84,14 +84,16 @@ function setSide(side, prefix) {
   bug.style.setProperty(`--${side}`, match[`${side}_color_bg`] || '#1d3fb8');
   bug.style.setProperty(`--${side}-text`, match[`${side}_color_text`] || '#ffffff');
   $(`${prefix}Name`).textContent = name;
-  const logo = $(`${prefix}Logo`);
-  if (match[`${side}_logo`]) {
-    logo.src = `/media-files/${match[`${side}_logo`]}`;
-    logo.style.display = '';
-  } else logo.style.display = 'none';
+  setTeamLogo($(`${prefix}Logo`), match[`${side}_logo`], match[`${side}_team_id`]);
 }
 
 const suspEls = new Map();
+
+function suspHost(side) {
+  if (side === 'home') return $('suspHome');
+  if (side === 'away') return $('suspAway');
+  return null;
+}
 
 function renderSusp() {
   const current = new Set(suspensions.map(s => s.id));
@@ -104,15 +106,19 @@ function renderSusp() {
     }
   }
   for (const s of suspensions) {
+    const host = suspHost(s.side);
+    if (!host) continue;
     let el = suspEls.get(s.id);
     if (!el) {
       el = document.createElement('span');
       el.className = 'susp-chip';
-      $(s.side === 'home' ? 'suspHome' : 'suspAway').appendChild(el);
+      host.appendChild(el);
       el.animate(
         [{ opacity: 0, transform: 'translateY(10px)' }, { opacity: 1, transform: 'translateY(0)' }],
         { duration: 400, easing: 'cubic-bezier(.2,.8,.2,1)' });
       suspEls.set(s.id, el);
+    } else if (el.parentElement !== host) {
+      host.appendChild(el);
     }
     el.innerHTML = `⏱ ${s.player_number ? `<b>#${esc(s.player_number)}</b> ` : ''}${fmtTime(s.remaining_ms)}`;
   }

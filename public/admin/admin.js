@@ -214,8 +214,37 @@ function updateAgentBadges() {
   }
 }
 
+// ---------- last monitor dropdowns (per hall, this browser only) ----------
+const MONITOR_SEL_KEY = 'mmx_monitor_sel';
+
+function loadMonitorSel() {
+  try { return JSON.parse(localStorage.getItem(MONITOR_SEL_KEY) || '{}') || {}; }
+  catch { return {}; }
+}
+
+function saveMonitorSel(hallId, field, value) {
+  if (!hallId || !value) return;
+  const all = loadMonitorSel();
+  const prev = all[hallId] || {};
+  all[hallId] = { ...prev, [field]: String(value) };
+  localStorage.setItem(MONITOR_SEL_KEY, JSON.stringify(all));
+}
+
+function restoreSelect(sel, saved) {
+  if (!sel || saved == null || saved === '') return;
+  const ok = [...sel.options].some(o => o.value === String(saved));
+  if (ok) sel.value = String(saved);
+}
+
 // ---------- scenario status tracking ----------
 const scenarioStatus = new Map(); // hallId -> { stepIdx, total, type } | null
+const automationPending = new Map(); // hallId -> { trigger, scenarioId, name, dueAt }
+const AUTO_TRIGGER_LABEL = {
+  period1: '1. poločas',
+  period2: '2. poločas',
+  overtime: 'prodloužení',
+  timeout: 'timeout',
+};
 
 function stepTypeLabel(type) {
   return { spot: 'Spot', adbreak: 'Reklama', lineups: 'Soupisky', upcoming: 'Další zápasy', wait: 'Čekání' }[type] ?? type;
@@ -229,9 +258,32 @@ function updateScenarioStatusUI(hallId) {
   if (stopBtn)  stopBtn.style.display = state ? '' : 'none';
 }
 
+function updateAutomationUI(hallId) {
+  const el = document.querySelector(`[data-automation-status="${hallId}"]`);
+  if (!el) return;
+  const pending = automationPending.get(+hallId);
+  if (!pending) { el.innerHTML = ''; return; }
+  const sec = Math.max(0, Math.ceil((pending.dueAt - Date.now()) / 1000));
+  const label = AUTO_TRIGGER_LABEL[pending.trigger] || pending.trigger;
+  el.innerHTML = `<span>Automaticky: ${esc(label)} za ${sec} s</span>
+    <button data-cancelauto="${hallId}" style="margin-left:8px">Zrušit</button>`;
+}
+
+let automationTick = null;
+function ensureAutomationTick() {
+  if (automationTick) return;
+  automationTick = setInterval(() => {
+    for (const hallId of automationPending.keys()) updateAutomationUI(hallId);
+  }, 500);
+}
+
 socket.on('scenario:start', ({ hallId, total, name }) => {
   scenarioStatus.set(hallId, { stepIdx: 0, total, type: '' });
   updateScenarioStatusUI(hallId);
+  if (automationPending.has(+hallId)) {
+    automationPending.delete(+hallId);
+    updateAutomationUI(hallId);
+  }
 });
 socket.on('scenario:step', ({ hallId, stepIdx, total, type }) => {
   scenarioStatus.set(hallId, { stepIdx, total, type });
@@ -241,6 +293,22 @@ socket.on('scenario:done', ({ hallId }) => {
   scenarioStatus.delete(hallId);
   updateScenarioStatusUI(hallId);
 });
+socket.on('automation:pending', (p) => {
+  automationPending.set(+p.hallId, p);
+  updateAutomationUI(p.hallId);
+  ensureAutomationTick();
+});
+socket.on('automation:cancel', ({ hallId }) => {
+  automationPending.delete(+hallId);
+  updateAutomationUI(hallId);
+});
+
+function setSpotStopVisible(hallId, on) {
+  const stopBtn = document.querySelector(`[data-overlayspot-stop="${hallId}"]`);
+  if (stopBtn) stopBtn.style.display = on ? '' : 'none';
+}
+socket.on('spot:done', ({ hallId }) => setSpotStopVisible(hallId, false));
+socket.on('spot:stop', ({ hallId }) => setSpotStopVisible(hallId, false));
 
 // reflect ticker auto-hide (and any alert change) live, without wiping a half-typed message
 socket.on('alerts:update', async () => {
@@ -305,6 +373,7 @@ const renders = {
           <button data-stopscenario="${h.id}" class="danger" style="display:none">⏹</button>
         </div>
         <div data-scenario-status="${h.id}" style="font-size:12px;color:var(--muted);min-height:16px"></div>
+        <div data-automation-status="${h.id}" style="font-size:12px;color:var(--muted);min-height:16px"></div>
         <div class="row" style="gap:6px">
           <button data-reset="${h.id}" class="danger" style="flex:1">🔴 Reset overlay</button>
         </div>
@@ -318,6 +387,16 @@ const renders = {
       </div>`).join('')}</div>`;
 
     for (const h of halls) startPreview(h.id);
+
+    const savedSel = loadMonitorSel();
+    view.querySelectorAll('[data-spotsel]').forEach(sel => {
+      restoreSelect(sel, savedSel[sel.dataset.spotsel]?.spot);
+      sel.onchange = () => saveMonitorSel(sel.dataset.spotsel, 'spot', sel.value);
+    });
+    view.querySelectorAll('[data-scenariosel]').forEach(sel => {
+      restoreSelect(sel, savedSel[sel.dataset.scenariosel]?.scenario);
+      sel.onchange = () => saveMonitorSel(sel.dataset.scenariosel, 'scenario', sel.value);
+    });
 
     view.querySelectorAll('[data-obspanel]').forEach(b => b.onclick = () => openObsPanel(+b.dataset.obspanel));
 
@@ -344,7 +423,7 @@ const renders = {
         alert('Chyba: ' + r.error);
         updateAgentBadges(); // reset button to actual state
       } else {
-        // Optimistic update — agent:update event potvrdí neskôr
+        // Optimistic update — agent:update event potvrdí později
         b.disabled    = false;
         b.dataset.on  = stopping ? '0' : '1';
         b.textContent = stopping ? '▶ Spustit stream' : '⏹ Zastavit stream';
@@ -356,6 +435,7 @@ const renders = {
       const id = b.dataset.overlayspot;
       const sel = view.querySelector(`[data-spotsel="${id}"]`);
       if (!sel || !sel.value) return alert('Vyber video ze seznamu');
+      saveMonitorSel(id, 'spot', sel.value);
       const r = await api.post(`/api/overlay/${id}/spot`, { media_id: +sel.value });
       if (r.error) { alert('Spot: ' + r.error); return; }
       const stopBtn = view.querySelector(`[data-overlayspot-stop="${id}"]`);
@@ -396,16 +476,30 @@ const renders = {
       const hallId = b.dataset.runscenario;
       const sel = view.querySelector(`[data-scenariosel="${hallId}"]`);
       if (!sel || !sel.value) return alert('Vyber scénář ze seznamu');
-      const r = await api.post(`/api/scenarios/${sel.value}/run?hallId=${hallId}`, {});
-      if (r.error) alert('Scénář: ' + r.error);
+      saveMonitorSel(hallId, 'scenario', sel.value);
+      try {
+        const r = await api.post(`/api/scenarios/${sel.value}/run?hallId=${hallId}`, {});
+        if (r.error) alert('Scénář: ' + r.error);
+      } catch (e) {
+        alert('Scénář: ' + e.message);
+      }
     });
     view.querySelectorAll('[data-stopscenario]').forEach(b => b.onclick = async () => {
       const hallId = b.dataset.stopscenario;
       await api.post(`/api/overlay/${hallId}/spot/stop`, {}); // stops scenario + clears all overlay
     });
 
-    // Restore running scenario status indicators
-    for (const [hallId, state] of scenarioStatus) updateScenarioStatusUI(hallId);
+    view.querySelectorAll('[data-automation-status]').forEach(el => {
+      el.onclick = async (e) => {
+        const btn = e.target.closest('[data-cancelauto]');
+        if (!btn) return;
+        await api.post(`/api/overlay/${btn.dataset.cancelauto}/automation/cancel`, {});
+      };
+    });
+
+    // Restore running scenario status and pending automation countdowns
+    for (const [hallId] of scenarioStatus) updateScenarioStatusUI(hallId);
+    for (const hallId of automationPending.keys()) updateAutomationUI(hallId);
 
     updateAgentBadges();
     refreshMonitorScores();
@@ -1062,12 +1156,37 @@ const renders = {
 
   // ---------- Scénáře ----------
   async scenarios() {
-    const [media, halls] = await Promise.all([api.get('/api/media'), api.get('/api/halls')]);
+    const [media, halls, scenList, st] = await Promise.all([
+      api.get('/api/media'), api.get('/api/halls'), api.get('/api/scenarios'), api.get('/api/settings')
+    ]);
+    settings = st;
     const videos = media.filter(m => m.type === 'video');
-    const STEP_LABELS = { spot: 'Spot', adbreak: 'Reklama', lineups: 'Súpisky', upcoming: 'Další zápasy', wait: 'Čekání' };
+    const STEP_LABELS = { spot: 'Spot', adbreak: 'Reklama', lineups: 'Soupisky', upcoming: 'Další zápasy', wait: 'Čekání' };
     const videoOpts = videos.map(v => `<option value="${v.id}">${esc(v.name || v.filename)}</option>`).join('');
+    const autoScenSelect = (key) => {
+      const cur = String(settings[key] || '');
+      return `<select id="${key}" style="min-width:180px;flex:1">
+        <option value="">— vypnuto —</option>
+        ${scenList.map(s => `<option value="${s.id}" ${String(s.id) === cur ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
+      </select>`;
+    };
+    const autoRow = (label, idKey, delayKey, fallback) => `
+      <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
+        <label style="min-width:280px">${label}</label>
+        ${autoScenSelect(idKey)}
+        <label>zpoždění <input type="number" id="${delayKey}" min="0" max="600" value="${esc(settings[delayKey] ?? fallback)}" style="width:64px"> s</label>
+      </div>`;
 
     view.innerHTML = `
+      <div class="panel grid" style="margin-bottom:12px">
+        <b>Automatické spouštění</b>
+        <p class="muted" style="margin:0">Scénář se nespouští při doběhnutí hodin, ale až když obsluha potvrdí konec poločasu tlačítkem, aby skóre zůstalo chvíli na obrazovce.</p>
+        ${autoRow('Po 1. poločasu (tlačítko poločas ▶)', 'auto_scen_period1_id', 'auto_scen_period1_delay', '30')}
+        ${autoRow('Po 2. poločasu (poločas ▶ nebo Ukončit zápas)', 'auto_scen_period2_id', 'auto_scen_period2_delay', '15')}
+        ${autoRow('Po prodloužení', 'auto_scen_overtime_id', 'auto_scen_overtime_delay', '15')}
+        ${autoRow('Při timeoutu', 'auto_scen_timeout_id', 'auto_scen_timeout_delay', '0')}
+        <div class="row"><button class="primary" id="autoScenSave">Uložit automatiku</button></div>
+      </div>
       <div class="panel grid" style="margin-bottom:12px">
         <div class="row" style="gap:8px">
           <input id="newScenName" placeholder="Název nového scénáře" style="flex:1">
@@ -1076,18 +1195,32 @@ const renders = {
       </div>
       <div id="scenList"></div>`;
 
+    document.getElementById('autoScenSave').onclick = async () => {
+      await api.put('/api/settings', {
+        auto_scen_period1_id: document.getElementById('auto_scen_period1_id').value,
+        auto_scen_period1_delay: document.getElementById('auto_scen_period1_delay').value,
+        auto_scen_period2_id: document.getElementById('auto_scen_period2_id').value,
+        auto_scen_period2_delay: document.getElementById('auto_scen_period2_delay').value,
+        auto_scen_overtime_id: document.getElementById('auto_scen_overtime_id').value,
+        auto_scen_overtime_delay: document.getElementById('auto_scen_overtime_delay').value,
+        auto_scen_timeout_id: document.getElementById('auto_scen_timeout_id').value,
+        auto_scen_timeout_delay: document.getElementById('auto_scen_timeout_delay').value,
+      });
+      alert('Uloženo');
+    };
+
     function stepParamsHtml(type, p) {
       if (type === 'spot')
-        return `<select class="p-media">${videoOpts || '<option value="">žiadne video</option>'}</select>`;
+        return `<select class="p-media">${videoOpts || '<option value="">žádné video</option>'}</select>`;
       if (type === 'adbreak')
         return `<label style="font-size:13px">Počet spotů:</label>
           <input type="number" class="p-count" value="${p.count ?? 1}" min="1" max="20" style="width:60px">`;
       if (type === 'lineups' || type === 'upcoming')
-        return `<label style="font-size:13px">Trvanie:</label>
+        return `<label style="font-size:13px">Trvání:</label>
           <input type="number" class="p-duration" value="${p.duration_s ?? 30}" min="5" max="300" style="width:70px">
           <span style="font-size:13px">s</span>`;
       if (type === 'wait')
-        return `<label style="font-size:13px">Sekúnd:</label>
+        return `<label style="font-size:13px">Sekund:</label>
           <input type="number" class="p-seconds" value="${p.seconds ?? 5}" min="1" max="300" style="width:70px">`;
       return '';
     }
@@ -1205,9 +1338,13 @@ const renders = {
         const sid = b.dataset.run;
         const hallId = el.querySelector(`[data-runsel="${sid}"]`)?.value;
         if (!hallId) return;
-        const r = await api.post(`/api/scenarios/${sid}/run?hallId=${hallId}`, {});
-        if (r.error) alert('Chyba: ' + r.error);
-        else { b.textContent = '✓'; setTimeout(() => { b.textContent = '▶ Spustit'; }, 2000); }
+        try {
+          const r = await api.post(`/api/scenarios/${sid}/run?hallId=${hallId}`, {});
+          if (r.error) alert('Chyba: ' + r.error);
+          else { b.textContent = '✓'; setTimeout(() => { b.textContent = '▶ Spustit'; }, 2000); }
+        } catch (e) {
+          alert('Chyba: ' + e.message);
+        }
       });
 
       el.querySelectorAll('[data-delscen]').forEach(b => b.onclick = async () => {
@@ -1300,16 +1437,30 @@ async function _openModal(user, halls) {
 }
 
 // ---------- helpers ----------
+// Lower CSS order = higher on the Monitoring grid.
+// 0:00 stopped first (videos), then remaining time to period end, idle halls last.
+function monitorOrder(m) {
+  if (!m) return 2_000_000_000;
+  const elapsed = m.elapsed_ms ?? 0;
+  if (!m.timer_running && elapsed < 500) return 0;
+  return Math.max(0, (m.period_target_ms || 0) - elapsed) + 1;
+}
+
 async function refreshMonitorScores() {
   const halls = await api.get('/api/halls');
-  for (const h of halls) {
+  const lives = await Promise.all(halls.map(h => api.get(`/api/halls/${h.id}/live`)));
+  halls.forEach((h, i) => {
     const box = document.getElementById(`m-${h.id}`);
-    if (!box) continue;
-    const m = await api.get(`/api/halls/${h.id}/live`);
+    if (!box) return;
+    const m = lives[i];
     box.innerHTML = m
       ? `<b>${esc(teamLabel(m, 'home'))} ${m.home_score} : ${m.away_score} ${esc(teamLabel(m, 'away'))}</b> · ${m.period}. pol · ${fmtTime(m.elapsed_ms)}`
       : 'Žádný živý zápas';
-  }
+    const card = box.closest('.monitor');
+    if (!card) return;
+    const next = String(monitorOrder(m));
+    if (card.style.order !== next) card.style.order = next;
+  });
 }
 
 async function toggleRoster(teamId) {

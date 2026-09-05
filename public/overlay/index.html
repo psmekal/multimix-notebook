@@ -107,10 +107,14 @@
     /* animated digits (odometer roll) */
     .dig { display: inline-block; white-space: pre; }
 
-    /* penalties: above the bug, anchored to the penalized team's side */
-    .susp-col { position: absolute; bottom: 100%; margin-bottom: 10px; display: flex; gap: 8px; }
-    #suspHome { left: 0; }
-    #suspAway { right: 0; justify-content: flex-end; }
+    /* penalties: above the bug, pinned to that team's plate — never stretch across both */
+    .susp-col {
+      position: absolute; bottom: 100%; margin-bottom: 10px;
+      display: flex; gap: 8px; flex-wrap: wrap; width: max-content; max-width: 42%;
+      pointer-events: none;
+    }
+    #suspHome { left: 0; right: auto; }
+    #suspAway { right: 0; left: auto; justify-content: flex-end; }
     .susp-chip {
       background: linear-gradient(180deg, #3a1210 0%, #1c0807 60%, #0d0303 100%);
       box-shadow: inset 0 2px 0 rgba(255,120,110,.4), 0 4px 12px rgba(0,0,0,.5);

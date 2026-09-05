@@ -245,12 +245,21 @@ const defaults = {
   mediamtx_hls_port: '8888',
   mediamtx_srt_port: '8890',
   mediamtx_webrtc_port: '8889',
-  // Reklamné bloky
-  stinger_media_id: '',     // priehľadné prechodové video (id z media)
-  stinger_cut_pct: '50',    // v ktorom % stingeru sa skryto prepne zdroj (plné prekrytie)
-  ad_block_timeout: '1',    // počet spotov: timeout
-  ad_block_halftime: '3',   // počet spotov: polčas
-  ad_block_between: '5'     // počet spotov: medzi zápasmi
+  // Reklamní bloky
+  stinger_media_id: '',     // průhledné přechodové video (id z media)
+  stinger_cut_pct: '50',    // v kterém % stingeru se skrytě přepne zdroj (plné překrytí)
+  ad_block_timeout: '1',    // počet spotů: timeout
+  ad_block_halftime: '3',   // počet spotů: poločas
+  ad_block_between: '5',    // počet spotů: mezi zápasy
+  // Automatic scenario playback (operator buttons, not clock auto-stop)
+  auto_scen_period1_id: '',
+  auto_scen_period1_delay: '30',
+  auto_scen_period2_id: '',
+  auto_scen_period2_delay: '15',
+  auto_scen_overtime_id: '',
+  auto_scen_overtime_delay: '15',
+  auto_scen_timeout_id: '',
+  auto_scen_timeout_delay: '0'
 };
 const insSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
 for (const [k, v] of Object.entries(defaults)) insSetting.run(k, v);

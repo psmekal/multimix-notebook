@@ -156,5 +156,5 @@ export function checkStreamPreviewAccess(req) {
 
 export function sessionCookie(token, req) {
   const secure = req.headers['x-forwarded-proto'] === 'https' || !!req.socket?.encrypted;
-  return `session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800${secure ? '; Secure' : ''}`;
+  return `session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${secure ? '; Secure' : ''}`;
 }

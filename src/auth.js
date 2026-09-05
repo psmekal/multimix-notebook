@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { db } from './db.js';
 
-const TTL_MS = 8 * 60 * 60 * 1000; // 8 hodín
+const TTL_MS = 24 * 60 * 60 * 1000; // 24 hodin
 
 export function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');

@@ -760,25 +760,37 @@ app.post('/api/overlay/:hallId/spot', async req => {
   const stinger = resolveStinger();
   const cutPct = +getSetting('stinger_cut_pct') || 50;
   agentRouter.send(hallId, 'agent:mute-mic', {});
+  activeSpots.add(hallId);
   io.emit('spot:play', { hallId, filename: m.filename, name: m.name || m.filename, stinger, cutPct });
   return { ok: true };
 });
 app.post('/api/overlay/:hallId/spot/stop', async req => {
   const hallId = +req.params.hallId;
+  cancelAutomation(hallId);
   stopScenario(hallId);
   io.emit('scenario:done', { hallId });
   if (adBreaks.has(hallId)) { adBreaks.delete(hallId); io.emit('adbreak:stop', { hallId }); }
+  activeSpots.delete(hallId);
   io.emit('spot:stop', { hallId });
   agentRouter.send(hallId, 'agent:unmute-mic', {});
   return { ok: true };
 });
 
-// ---------- reklamné bloky (weighted ad break) ----------
+app.post('/api/overlay/:hallId/automation/cancel', async req => {
+  cancelAutomation(+req.params.hallId);
+  return { ok: true };
+});
+
+// ---------- reklamní bloky (weighted ad break) ----------
 // Active ad-break halls (mic stays muted until overlay reports adbreak:ended).
 const adBreaks = new Set();
+// Manual / scenario single-spot halls (Stop button + unmute wait for spot:ended).
+const activeSpots = new Set();
 
-// Running scenarios: hallId -> { steps, stepIdx, phase, timer, stinger, cutPct }
+// Running scenarios: hallId -> { steps, stepIdx, phase, timer, stinger, cutPct, auto, trigger }
 const runningScenarios = new Map();
+// Pending operator-button automations: hallId -> { trigger, timer, scenarioId, dueAt, auto }
+const pendingAutomations = new Map();
 
 function stopScenario(hallId) {
   const state = runningScenarios.get(hallId);
@@ -786,6 +798,14 @@ function stopScenario(hallId) {
   if (state.timer) clearTimeout(state.timer);
   runningScenarios.delete(hallId);
   io.emit('scenario:abort', { hallId }); // tell overlay to restore score/branding immediately
+}
+
+function beginScenarioSteps(hallId) {
+  const state = runningScenarios.get(hallId);
+  if (!state || state.phase !== 'begin') return;
+  if (state.timer) { clearTimeout(state.timer); state.timer = null; }
+  state.phase = 'running';
+  execScenarioStep(hallId, state);
 }
 
 async function execScenarioStep(hallId, state) {
@@ -799,6 +819,7 @@ async function execScenarioStep(hallId, state) {
     const m = db.prepare('SELECT * FROM media WHERE id = ?').get(params.media_id);
     if (!m || !fs.existsSync(path.join(mediaDir, m.filename))) { advanceScenario(hallId); return; }
     agentRouter.send(hallId, 'agent:mute-mic', {});
+    activeSpots.add(hallId);
     io.emit('spot:play', { hallId, filename: m.filename, name: m.name || m.filename, stinger: state.stinger, cutPct: state.cutPct });
     // advance triggered by spot:ended socket event (fires after closing stinger)
 
@@ -925,6 +946,7 @@ function teamLineup(m, side) {
         .all(teamId)
     : [];
   return {
+    id: teamId || null,
     name: m[`${side}_name`] || m[`${side}_placeholder`] || '',
     color_bg: m[`${side}_color_bg`] || '#1d3fb8',
     color_text: m[`${side}_color_text`] || '#ffffff',
@@ -932,15 +954,38 @@ function teamLineup(m, side) {
     players,
   };
 }
+const MANUAL_PANEL_MS = 10_000;
+const overlayPanelTimers = new Map(); // `${hallId}:${kind}` -> timeout
+
+function scheduleOverlayPanelHide(hallId, kind) {
+  const key = `${hallId}:${kind}`;
+  const prev = overlayPanelTimers.get(key);
+  if (prev) clearTimeout(prev);
+  overlayPanelTimers.set(key, setTimeout(() => {
+    overlayPanelTimers.delete(key);
+    io.emit(`${kind}:hide`, { hallId });
+  }, MANUAL_PANEL_MS));
+}
+
+function cancelOverlayPanelHide(hallId, kind) {
+  const key = `${hallId}:${kind}`;
+  const prev = overlayPanelTimers.get(key);
+  if (prev) clearTimeout(prev);
+  overlayPanelTimers.delete(key);
+}
+
 app.post('/api/overlay/:hallId/lineups', async req => {
   const hallId = +req.params.hallId;
   const m = currentMatchForHall(hallId);
   if (!m) return { error: 'žádný zápas pro tuto halu' };
   io.emit('lineups:show', { hallId, home: teamLineup(m, 'home'), away: teamLineup(m, 'away') });
+  scheduleOverlayPanelHide(hallId, 'lineups');
   return { ok: true };
 });
 app.post('/api/overlay/:hallId/lineups/stop', async req => {
-  io.emit('lineups:hide', { hallId: +req.params.hallId });
+  const hallId = +req.params.hallId;
+  cancelOverlayPanelHide(hallId, 'lineups');
+  io.emit('lineups:hide', { hallId });
   return { ok: true };
 });
 
@@ -949,7 +994,7 @@ app.get('/api/scenarios', () => db.prepare('SELECT * FROM scenarios ORDER BY id'
 
 app.post('/api/scenarios', req => {
   const { name } = req.body;
-  if (!name) return { error: 'name chýba' };
+  if (!name) return { error: 'name chybí' };
   const r = db.prepare('INSERT INTO scenarios (name) VALUES (?)').run(name);
   return db.prepare('SELECT * FROM scenarios WHERE id = ?').get(r.lastInsertRowid);
 });
@@ -980,7 +1025,7 @@ app.post('/api/scenarios/:id/steps', req => {
 
 app.put('/api/scenario-steps/:id', req => {
   const cur = db.prepare('SELECT * FROM scenario_steps WHERE id = ?').get(req.params.id);
-  if (!cur) return { error: 'krok nenájdený' };
+  if (!cur) return { error: 'krok nenalezen' };
   const { type, params, step_order } = req.body;
   db.prepare('UPDATE scenario_steps SET type=?, params=?, step_order=? WHERE id=?')
     .run(type ?? cur.type, params != null ? JSON.stringify(params) : cur.params, step_order ?? cur.step_order, req.params.id);
@@ -992,27 +1037,155 @@ app.delete('/api/scenario-steps/:id', req => {
   return { ok: true };
 });
 
-app.post('/api/scenarios/:id/run', async req => {
-  const hallId = +req.query.hallId;
-  if (!hallId) return { error: 'hallId chýba' };
-  const scenario = db.prepare('SELECT * FROM scenarios WHERE id = ?').get(req.params.id);
+function activeAdCount() {
+  return db.prepare(
+    `SELECT COUNT(*) c FROM media WHERE type='video' AND is_ad=1 AND ad_active=1`
+  ).get().c;
+}
+
+function scenarioStartError(steps) {
+  for (const step of steps) {
+    const params = JSON.parse(step.params || '{}');
+    if (step.type === 'adbreak') {
+      if (activeAdCount() > 0) return null;
+    } else if (step.type === 'spot') {
+      const m = db.prepare('SELECT * FROM media WHERE id = ?').get(params.media_id);
+      if (m && fs.existsSync(path.join(mediaDir, m.filename))) return null;
+    } else if (step.type === 'lineups' || step.type === 'upcoming' || step.type === 'wait') {
+      return null;
+    }
+  }
+  if (steps.some(s => s.type === 'adbreak'))
+    return 'žádné aktivní reklamy (zaškrtni Reklama + Kampaň v Médiích)';
+  return 'Scénář nemá žádné přehratelné kroky';
+}
+
+const AUTO_RULES = {
+  period1:  { idKey: 'auto_scen_period1_id',  delayKey: 'auto_scen_period1_delay',  defaultDelay: 30 },
+  period2:  { idKey: 'auto_scen_period2_id',  delayKey: 'auto_scen_period2_delay',  defaultDelay: 15 },
+  overtime: { idKey: 'auto_scen_overtime_id', delayKey: 'auto_scen_overtime_delay', defaultDelay: 15 },
+  timeout:  { idKey: 'auto_scen_timeout_id',  delayKey: 'auto_scen_timeout_delay',  defaultDelay: 0 },
+};
+
+function triggerForEndedPeriod(endedPeriod) {
+  if (endedPeriod === 1) return 'period1';
+  if (endedPeriod === 2) return 'period2';
+  if (endedPeriod >= 3) return 'overtime';
+  return null;
+}
+
+function readAutoRule(trigger) {
+  const rule = AUTO_RULES[trigger];
+  if (!rule) return null;
+  const scenarioId = +(getSetting(rule.idKey) || 0);
+  const raw = getSetting(rule.delayKey);
+  const delayS = raw == null || raw === '' ? rule.defaultDelay : Math.max(0, +raw || 0);
+  return { trigger, scenarioId, delayS };
+}
+
+function cancelAutomation(hallId) {
+  hallId = +hallId;
+  const pending = pendingAutomations.get(hallId);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  pendingAutomations.delete(hallId);
+  io.emit('automation:cancel', { hallId });
+}
+
+function abortHallPlayback(hallId) {
+  stopScenario(hallId);
+  io.emit('scenario:done', { hallId });
+  if (adBreaks.has(hallId)) { adBreaks.delete(hallId); io.emit('adbreak:stop', { hallId }); }
+  activeSpots.delete(+hallId);
+  io.emit('spot:stop', { hallId });
+  agentRouter.send(hallId, 'agent:unmute-mic', {});
+}
+
+function abortAutoScenario(hallId, trigger) {
+  const state = runningScenarios.get(+hallId);
+  if (!state?.auto) return;
+  if (trigger && state.trigger !== trigger) return;
+  abortHallPlayback(+hallId);
+}
+
+function cancelTimeoutAutomation(hallId) {
+  hallId = +hallId;
+  const pending = pendingAutomations.get(hallId);
+  if (pending?.trigger === 'timeout') cancelAutomation(hallId);
+  abortAutoScenario(hallId, 'timeout');
+}
+
+function cancelPeriodAutomations(hallId) {
+  const pending = pendingAutomations.get(+hallId);
+  if (pending && pending.trigger !== 'timeout') cancelAutomation(hallId);
+}
+
+function scheduleAutomation(hallId, trigger, scenarioId, delayS) {
+  hallId = +hallId;
+  scenarioId = +scenarioId;
+  cancelAutomation(hallId);
+  if (!hallId || !scenarioId) return;
+  if (runningScenarios.has(hallId)) return;
+  const scenario = db.prepare('SELECT name FROM scenarios WHERE id = ?').get(scenarioId);
+  if (!scenario) return;
+  const delayMs = Math.max(0, (+delayS || 0) * 1000);
+  const dueAt = Date.now() + delayMs;
+  const timer = setTimeout(() => {
+    const pending = pendingAutomations.get(hallId);
+    if (pending?.timer !== timer) return;
+    pendingAutomations.delete(hallId);
+    runScenario(hallId, scenarioId, { auto: true, trigger });
+  }, delayMs);
+  pendingAutomations.set(hallId, { trigger, timer, scenarioId, dueAt, auto: true });
+  io.emit('automation:pending', { hallId, trigger, scenarioId, name: scenario.name, dueAt });
+}
+
+function schedulePeriodEndAutomation(hallId, endedPeriod) {
+  cancelAutomation(hallId);
+  const trigger = triggerForEndedPeriod(endedPeriod);
+  if (!trigger) return;
+  const rule = readAutoRule(trigger);
+  if (!rule?.scenarioId) return;
+  scheduleAutomation(hallId, trigger, rule.scenarioId, rule.delayS);
+}
+
+function scheduleTimeoutAutomation(hallId) {
+  const rule = readAutoRule('timeout');
+  if (!rule?.scenarioId) return;
+  scheduleAutomation(hallId, 'timeout', rule.scenarioId, rule.delayS);
+}
+
+function runScenario(hallId, scenarioId, opts = {}) {
+  hallId = +hallId;
+  scenarioId = +scenarioId;
+  if (!hallId) return { error: 'hallId chybí' };
+  const scenario = db.prepare('SELECT * FROM scenarios WHERE id = ?').get(scenarioId);
   if (!scenario) return { error: 'Scénář nenalezen' };
-  const steps = db.prepare('SELECT * FROM scenario_steps WHERE scenario_id = ? ORDER BY step_order, id').all(req.params.id);
+  const steps = db.prepare('SELECT * FROM scenario_steps WHERE scenario_id = ? ORDER BY step_order, id').all(scenarioId);
   if (!steps.length) return { error: 'Scénář nemá žádné kroky' };
+  const emptyErr = scenarioStartError(steps);
+  if (emptyErr) return { error: emptyErr };
+  if (!opts.auto) cancelAutomation(hallId);
   stopScenario(hallId);
   const stinger = resolveStinger();
   const cutPct = +getSetting('stinger_cut_pct') || 50;
-  const state = { steps, stepIdx: 0, phase: 'begin', timer: null, stinger, cutPct };
+  const state = { steps, stepIdx: 0, phase: 'begin', timer: null, stinger, cutPct, auto: !!opts.auto, trigger: opts.trigger || null };
   runningScenarios.set(hallId, state);
   io.emit('scenario:start', { hallId, scenarioId: scenario.id, name: scenario.name, total: steps.length });
-  // No global opening stinger — each ad/spot step plays its own stinger on both ends
+  // No global opening stinger — each ad/spot step plays its own stinger on both ends.
+  // Start steps immediately; overlay ACK is optional. 2s fallback covers a future opening stinger.
   io.emit('scenario:begin', { hallId, stinger: null, cutPct });
-  // execution continues via scenario:ready socket event from the overlay
+  beginScenarioSteps(hallId);
+  if (state.phase === 'begin')
+    state.timer = setTimeout(() => beginScenarioSteps(hallId), 2000);
   return { ok: true };
-});
+}
+
+app.post('/api/scenarios/:id/run', async req => runScenario(+req.query.hallId, +req.params.id));
 
 app.post('/api/scenarios/:id/stop', async req => {
   const hallId = +req.query.hallId;
+  cancelAutomation(hallId);
   stopScenario(hallId);
   io.emit('scenario:done', { hallId });
   return { ok: true };
@@ -1045,11 +1218,14 @@ app.post('/api/overlay/:hallId/upcoming', async req => {
   const hallId = +req.params.hallId;
   const matches = upcomingForHall(hallId);
   io.emit('upcoming:show', { hallId, matches });
+  scheduleOverlayPanelHide(hallId, 'upcoming');
   return { ok: true, count: matches.length };
 });
 
 app.post('/api/overlay/:hallId/upcoming/stop', async req => {
-  io.emit('upcoming:hide', { hallId: +req.params.hallId });
+  const hallId = +req.params.hallId;
+  cancelOverlayPanelHide(hallId, 'upcoming');
+  io.emit('upcoming:hide', { hallId });
   return { ok: true };
 });
 
@@ -1493,6 +1669,7 @@ function scheduleTimeoutHorns(matchId, hallId) {
     db.prepare('UPDATE matches SET timeout_until=NULL, timeout_side=NULL WHERE id=?').run(matchId);
     emitHorn(hallId, 'timeout-end');
     emitMatch(matchId);
+    cancelTimeoutAutomation(hallId);
   }, TIMEOUT_HORN_MS);
   timeoutHornTimers.set(matchId, { warn, end });
 }
@@ -1547,8 +1724,10 @@ app.post('/api/matches/:id/start', req => controlMatch(+req.params.id, m => {
 }));
 app.post('/api/matches/:id/timer', req => controlMatch(+req.params.id, m => {
   const { action } = req.body; // start | stop | reset | set | adjust | stopAt
-  if (action === 'start' && !m.timer_running)
+  if (action === 'start' && !m.timer_running) {
     db.prepare('UPDATE matches SET timer_running=1, timer_started_at=? WHERE id=?').run(Date.now(), m.id);
+    if (m.hall_id) cancelPeriodAutomations(m.hall_id);
+  }
   if (action === 'stop' && m.timer_running) {
     const target = periodLengthMs(m);
     let ms = matchElapsedMs(m);
@@ -1586,11 +1765,19 @@ app.post('/api/matches/:id/period', req => {
   // changing period resets the clock but keeps score and suspensions; the
   // cumulative game-time base advances so suspensions carry over correctly
   const period = Math.max(1, +req.body.period || 1);
+  let endedPeriod = 0;
+  let hallId = 0;
   const result = controlMatch(+req.params.id, m => {
+    endedPeriod = m.period;
+    hallId = m.hall_id;
     db.prepare('UPDATE matches SET period=?, timer_running=0, timer_started_at=NULL, timer_offset_ms=0, prev_periods_ms=? WHERE id=?')
       .run(period, prevPeriodsMs(m, period), m.id);
   });
   if (result && period === 2) autoAlert(`Poločas: ${matchLabel(result)}`);
+  if (result && hallId) {
+    if (period > endedPeriod) schedulePeriodEndAutomation(hallId, endedPeriod);
+    else cancelAutomation(hallId);
+  }
   return result;
 });
 app.post('/api/matches/:id/score', req => controlMatch(+req.params.id, m => {
@@ -1621,6 +1808,7 @@ app.post('/api/matches/:id/event', req => controlMatch(+req.params.id, m => {
       db.prepare(`UPDATE matches SET ${col} = ${col} + 1, timeout_until=?, timeout_side=? WHERE id=?`)
         .run(until, side, m.id);
     scheduleTimeoutHorns(m.id, m.hall_id);
+    if (m.hall_id) scheduleTimeoutAutomation(m.hall_id);
   }
   // brief on-screen announcement for timeouts and cards
   if (['timeout', 'yellow', 'red', 'blue'].includes(type) && m.hall_id)
@@ -1633,6 +1821,7 @@ app.post('/api/matches/:id/timeout-undo', req => controlMatch(+req.params.id, m 
   if (m.timeout_side === side) {
     clearTimeoutHorns(m.id);
     db.prepare(`UPDATE matches SET ${col} = MAX(0, ${col} - 1), timeout_until=NULL, timeout_side=NULL WHERE id = ?`).run(m.id);
+    cancelTimeoutAutomation(m.hall_id);
   } else {
     db.prepare(`UPDATE matches SET ${col} = MAX(0, ${col} - 1) WHERE id = ?`).run(m.id);
   }
@@ -1640,7 +1829,11 @@ app.post('/api/matches/:id/timeout-undo', req => controlMatch(+req.params.id, m 
   if (last) db.prepare('DELETE FROM events WHERE id = ?').run(last.id);
 }));
 app.post('/api/matches/:id/finish', req => {
+  let endedPeriod = 0;
+  let hallId = 0;
   const result = controlMatch(+req.params.id, m => {
+    endedPeriod = m.period;
+    hallId = m.hall_id;
     clearTimeoutHorns(m.id);
     db.prepare(`UPDATE matches SET status='finished', timer_running=0, timer_started_at=NULL,
       timer_offset_ms=?, timeout_until=NULL, timeout_side=NULL WHERE id=?`).run(matchElapsedMs(m), m.id);
@@ -1648,6 +1841,7 @@ app.post('/api/matches/:id/finish', req => {
     emitSchedule();
   });
   if (result) autoAlert(`Konec: ${matchLabel(result)}`);
+  if (result && hallId) schedulePeriodEndAutomation(hallId, endedPeriod);
   return result;
 });
 app.get('/api/matches/:id/events', req =>
@@ -1823,15 +2017,24 @@ agentRouter.attach(
   (hall, entry) => { if (io) io.emit('agent:log', { hall, ...entry }); }
 );
 
+function overlayActionActive(hallId) {
+  hallId = +hallId;
+  return runningScenarios.has(hallId) || adBreaks.has(hallId) || activeSpots.has(hallId);
+}
+
 // Overlay connections identify their hall + agent_token in the handshake so these
 // control events (which unmute mics / drive scenarios) can't be spoofed by an
 // arbitrary client hitting the public Socket.IO endpoint.
-function verifiedOverlayHall(socket, hall) {
+// OBS browser sources often have hall= but a missing/stale token; still accept
+// completion for an overlay action this process itself started.
+function verifiedOverlayHall(socket, hall, eventToken) {
   const hallId = +hall;
   if (!hallId) return null;
   const auth = socket.handshake.auth || {};
-  if (+auth.hall !== hallId || !verifyHallToken(hallId, auth.token)) return null;
-  return hallId;
+  if (auth.hall != null && auth.hall !== '' && +auth.hall !== hallId) return null;
+  if (verifyHallToken(hallId, eventToken || auth.token)) return hallId;
+  if (overlayActionActive(hallId)) return hallId;
+  return null;
 }
 
 io.on('connection', socket => {
@@ -1860,16 +2063,18 @@ io.on('connection', socket => {
   });
 
   // Overlay reports a manual single spot ended → unmute mic (unless scenario handles it), advance scenario
-  socket.on('spot:ended', ({ hall }) => {
-    const hallId = verifiedOverlayHall(socket, hall);
+  socket.on('spot:ended', ({ hall, token }) => {
+    const hallId = verifiedOverlayHall(socket, hall, token);
     if (!hallId) return;
+    activeSpots.delete(hallId);
     if (!runningScenarios.has(hallId)) agentRouter.send(hallId, 'agent:unmute-mic', {});
     if (runningScenarios.has(hallId)) advanceScenario(hallId);
+    io.emit('spot:done', { hallId });
   });
 
   // Overlay reports the whole ad break finished → unmute mic (unless scenario handles it), advance scenario
-  socket.on('adbreak:ended', ({ hall }) => {
-    const hallId = verifiedOverlayHall(socket, hall);
+  socket.on('adbreak:ended', ({ hall, token }) => {
+    const hallId = verifiedOverlayHall(socket, hall, token);
     if (!hallId) return;
     adBreaks.delete(hallId);
     if (!runningScenarios.has(hallId)) agentRouter.send(hallId, 'agent:unmute-mic', {});
@@ -1877,18 +2082,15 @@ io.on('connection', socket => {
   });
 
   // Overlay finished the opening stinger → start running steps
-  socket.on('scenario:ready', ({ hall }) => {
-    const hallId = verifiedOverlayHall(socket, hall);
+  socket.on('scenario:ready', ({ hall, token }) => {
+    const hallId = verifiedOverlayHall(socket, hall, token);
     if (!hallId) return;
-    const state = runningScenarios.get(hallId);
-    if (!state || state.phase !== 'begin') return;
-    state.phase = 'running';
-    execScenarioStep(hallId, state);
+    beginScenarioSteps(hallId);
   });
 
   // Overlay finished the closing stinger → scenario fully done
-  socket.on('scenario:closed', ({ hall }) => {
-    const hallId = verifiedOverlayHall(socket, hall);
+  socket.on('scenario:closed', ({ hall, token }) => {
+    const hallId = verifiedOverlayHall(socket, hall, token);
     if (!hallId) return;
     const state = runningScenarios.get(hallId);
     if (state?.timer) clearTimeout(state.timer);

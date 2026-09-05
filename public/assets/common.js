@@ -2,6 +2,23 @@
 let _hallToken = null;
 export function setHallToken(token) { _hallToken = token || null; }
 
+/** Swap a team crest; always drop the previous src so a leftover logo cannot linger. */
+export function setTeamLogo(img, filename, teamId) {
+  if (!img) return;
+  if (!filename) {
+    img.removeAttribute('src');
+    delete img.dataset.src;
+    img.style.display = 'none';
+    return;
+  }
+  const url = `/media-files/${encodeURIComponent(filename)}?tid=${teamId || filename}`;
+  if (img.dataset.src !== url) {
+    img.dataset.src = url;
+    img.src = url;
+  }
+  img.style.display = '';
+}
+
 export const api = {
   async req(method, url, body) {
     const headers = {};
